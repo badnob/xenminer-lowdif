@@ -1,8 +1,15 @@
-# XenBlocks Miner by Tony.x1 #
+# XenBlocks Miner by Tony.x1
 
-Modular **Python + native CUDA** miner for [XenBlocks](https://xenblocks.io) with a live console dashboard, smart submit queue, halving-aware rewards, and hardware-safe GPU mining.
+Modular **Python + native CUDA** miner for [XenBlocks](https://xenblocks.io) — **Windows and Linux**.
 
-> CUDA/CPU miner · live dashboard · XNM / XUNI / XBLK · %VRAM safety caps · superblock detection · Woodyminer online stats
+Live console dashboard · smart submit queue · XNM / XUNI / XBLK · VRAM & temp safety · difficulty-aware power · Woodyminer remote stats
+
+| Platform | Start | CUDA library |
+|----------|--------|----------------|
+| **Windows** | `Start-Miner.bat` | `native/build/bin/xen_cuda.dll` |
+| **Linux** | `./start-miner.sh` | `native/build/bin/libxen_cuda.so` |
+
+**Full walkthrough:** [HOWTO.md](HOWTO.md)
 
 ---
 
@@ -10,153 +17,122 @@ Modular **Python + native CUDA** miner for [XenBlocks](https://xenblocks.io) wit
 
 ### Mining engines
 
-- **Native CUDA backend** (`xen_cuda.dll` / `libxen_cuda.so`) — high-performance Argon2id hashing without relying on the legacy `xenblocks.exe` path as primary
-- **CPU backend** — pure Python Argon2 mining when GPU/CUDA isn’t available
-- **Legacy GPU bridge** — optional supervision of external `xenblocks.exe` + DB watcher
+- **Native CUDA** — Argon2id on GPU (`xen_cuda.dll` on Windows, `libxen_cuda.so` on Linux)
+- **CPU backend** — pure Python when no NVIDIA GPU is available
+- **Legacy GPU bridge** — optional `xenblocks.exe` + DB watcher (Windows)
 - **Merged mining** of **XNM**, **XUNI**, and **XBLK** (superblocks) in one hash stream
-- **Official-style block classification**
-  - **XUNI** — `XUNI` + digit, time-window rules
-  - **XBLK** — XEN11 + superblock uppercase rule (digest body; threshold aligned with the open-source miner)
-  - **XNM** — normal XEN11 blocks
-- **Key strategies** — random (default), Fibonacci, pluggable strategy registry
-- **Difficulty-aware batch sizing** — Argon2 memory cost scales with network difficulty; batch size is recomputed to stay within VRAM caps
+- Official-style block rules (XUNI window, XEN11, superblock uppercase)
+- Key strategies: random (default), Fibonacci, pluggable registry
+- Difficulty-aware batch sizing (Argon2 memory cost tracks network difficulty)
 
-### Low-difficulty multi-lane harvest (VRAM fill)
+### Low-difficulty multi-lane harvest
 
-When network difficulty **drops** (e.g. 1100 → 100), each hash uses **less VRAM**. A single lane would leave most of the GPU idle. The miner then:
+When difficulty **drops**, each hash uses less VRAM. The miner:
 
-- **Spins up extra CUDA lanes** (configurable `max_lanes`, e.g. up to 4) with distinct key prefixes  
-- **Re-plans batch size per lane** so combined work **keeps the configured VRAM budget full**  
-- Logs a **harvest push** summary (lanes × batch, projected VRAM / free)  
-- On difficulty **rising** again, **collapses back toward 1 lane** and restores the normal plan  
-- During the short transition window, new hits are **queued** (no live submit/flush races) until mining is stable  
-- Thermal stress can **temporarily reduce lane cap**; cool-down restores it when safe  
-
-This is the “keep the card full when difficulty dips” path — not a fixed single batch for all difficulties.
+- Spins up extra CUDA lanes (e.g. up to `max_lanes = 4`)
+- Re-plans batch so combined work **fills the VRAM budget**
+- Collapses toward **1 lane** when difficulty rises again
+- Queues hits during short difficulty transitions
+- Can **reduce lane cap** after thermal stress (restores when cool)
 
 ### Live dashboard
 
-- Full-screen **Rich** live UI (alternate screen — resize-safe, no scrollback mess)
-- Compact stats table: Found / Accepted (tokens) / Rejected (pool) / Queued / Resubmit
-- **Session timelapse** with **1-hour H/s sparkline** and 1h average
-- Recent events feed (FOUND, ACCEPTED, QUEUED, RESUBMIT, WARN, …)
-- GPU readout: VRAM, util %, temperature, power, **CUDA batch / multi-lane** (e.g. `4 lanes × batch`)
-- Network status + current difficulty (including stale/offline awareness)
+- Full-screen **Rich** UI (resize-safe alternate screen)
+- Found / Accepted / Rejected / Queued / Resubmit
+- Session timelapse + 1-hour H/s sparkline
+- GPU: VRAM, util %, temp, power, CUDA batch / multi-lane
+- Network status + difficulty (stale/offline aware)
 
 ### Wallet & rewards
 
-- On-chain **wallet balances** (XNM / XUNI / XBLK) via XenBlocks RPC
-- **Day vs yesterday** and **week-to-date vs Monday** comparisons (1am mining-day boundary)
-- **Local accepts** history with day/week deltas
-- **Halving-aware token display** for XNM (yearly schedule: 10 → 5 → **2.5** → …)
-- XUNI / XBLK shown as **1 token per accepted block**
-- First-run **wallet setup** saved into `miner.ini`
+- On-chain balances (XNM / XUNI / XBLK)
+- Day / week comparisons (1am mining-day boundary)
+- Halving-aware XNM display; XUNI / XBLK = 1 token per accept
+- First-run wallet setup saved to `miner.ini`
 
 ### Queue & reliability
 
-- Persistent **SQLite + JSONL** queue for blocks that can’t submit yet
-- Holds blocks during difficulty transitions, XUNI window, network down, and shutdown
-- **CPU-capped parallel submit pool** for verify/flush work
-- Distinguishes true pool rejects vs difficulty mismatch / window / timeouts
-- Graceful **Ctrl+C**: stop mining, flush queue when possible, exit cleanly
-- Single-instance **lock** (`miner.lock`) so two miners don’t fight one GPU
+- Persistent SQLite + JSONL queue
+- Holds blocks during transitions, XUNI window, network down, shutdown
+- CPU-capped parallel submit pool
+- Graceful **Ctrl+C** (stop → flush → exit)
+- Single-instance lock (`data/miner.lock`)
 
 ### Hardware safety & efficiency
 
-- **VRAM caps as % of each GPU’s total** (safe headroom on 8 GB–32 GB+ cards)
-  - ~69% target use · ~25% desktop free · ~93% emergency · ~4% min free · ~6% CUDA overhead
-- Absolute floors so tiny cards never go to zero free VRAM
-- **Temp guard**: warn / graceful cooldown / auto-restart
-- **Lane cap reduction** after thermal stress during multi-lane harvest; restore when cool
-- **NVML power boost** toward configured % of card power limit; ease near warn temp
-- **Difficulty-aware power**: as difficulty rises above `vram_reference_difficulty`, power target eases within `gpu_power_min_pct`–`gpu_power_target_pct` (full ease at `gpu_difficulty_power_full_ratio`× reference)
-- **Thermal batch derate**: near warn/max temp, CUDA batch soft-scales down (never below `gpu_thermal_batch_min_scale`)
-- Optional Windows performance mode for mining sessions
-- Continuous NVML monitoring (temp, VRAM, util, power) via **pynvml**  
-  (uses the **installed** NVIDIA driver — **no drivers are shipped**)
-- CUDA `max_lanes` / `lane_reserve` / `vram_reference_difficulty` in `miner.ini` control harvest behaviour
+- VRAM caps as **% of each GPU** (~69% target, desktop headroom, emergency stop)
+- Temp guard: warn → cooldown → restart
+- **Difficulty-aware power** — as difficulty rises above reference, power target eases within `gpu_power_min_pct`–`gpu_power_target_pct`
+- **Thermal batch derate** — near warn/max temp, batch soft-scales (never below `gpu_thermal_batch_min_scale`)
+- NVML power control (`nvidia-smi` / driver); optional Windows High Performance plan on Windows only
+- Continuous NVML monitoring — **no NVIDIA drivers are shipped**
 
-### Network & ops
+### Network & remote stats
 
-- Background **difficulty poller** (non-blocking mining loop)
-- Server **uptime tracker** (last 6 hours, newest first, outage stats)
-- Session logging to `data/session.log`
-- Diagnostics mode (`--diagnose`)
-- One-click Windows start: `Start-Miner.bat` / `Start-Miner.ps1`
-
-### Woodyminer online stats (away from hardware)
-
-- Integrates with **[Woodyminer](https://woodyminer.com)** so you can check mining performance **from any browser** while away from the rig
-- Periodic upload of live stats (hashrate, accepts, uptime, GPU snapshot, difficulty, custom worker name)
-- **Leaderboard** presence for your wallet / machine without needing the local console open
-- Optional and configurable in `miner.ini` (`woodyminer_enabled`, upload URL/period, `woodyminer_custom_name`)
-- Does not replace the local dashboard — local UI for at-the-machine detail; Woodyminer for **remote readability**
-
-### Configuration
-
-- Single **`miner.ini`** for wallet, backend, efficiency, CUDA, monitoring, queue
-- CLI overrides: `--backend`, `--strategy`, `--lanes`, `--max-seconds`, `--no-dashboard`
-- Data directory for DB, queue, stats history, balances, uptime, timelapse
-
-### Developer-friendly
-
-- Modular layout: `core`, `mining`, `monitoring`, `efficiency`, `block_queue`, `networking`
-- Native CUDA engine build scripts (`native/build.ps1`, `native/build.sh`)
-- Unit tests for rewards, VRAM policy, block types, queue, dashboard, and more
+- Background difficulty poller
+- Server uptime tracker + session logs
+- **[Woodyminer](https://woodyminer.com)** remote stats / leaderboard
+- Optional **XenBlockScan** event reporting
 
 ---
 
 ## Requirements
 
-| Component | Notes |
-|-----------|--------|
-| **Python** | 3.10+ |
-| **Windows or Linux** | `Start-Miner.bat` / `./start-miner.sh` |
-| **NVIDIA GPU + driver** | For CUDA mining |
-| **CUDA Toolkit + cmake** | To build the native engine on Linux (and to rebuild on Windows) |
-| **EVM wallet** | `0x…` address for rewards (prompted on first run) |
+| Component | Windows | Linux |
+|-----------|---------|--------|
+| **OS** | Windows 10/11 | Modern x86_64 distro |
+| **Python** | 3.10+ ([python.org](https://www.python.org/downloads/) — add to PATH) | 3.10+ (`python3`, `pip`) |
+| **NVIDIA driver** | Game Ready / Studio | Proprietary NVIDIA driver |
+| **CUDA Toolkit + cmake** | To rebuild native engine | Required to **build** `libxen_cuda.so` |
+| **EVM wallet** | `0x…` address (prompted on first run) | Same |
 
-> This project does **not** ship NVIDIA drivers. Windows may ship a prebuilt `xen_cuda.dll`; Linux builds `libxen_cuda.so` via `./native/build.sh`.
+> Drivers are never bundled. A prebuilt `xen_cuda.dll` may be present for Windows; Linux users build with `./native/build.sh`.
 
 ---
 
 ## Quick start
 
-**Full walkthrough:** **[HOWTO.md](HOWTO.md)**
-
 ### Windows
 
-1. Install **Python 3.10+** ([python.org](https://www.python.org/downloads/) — add to PATH).  
-2. Install an **NVIDIA driver** if you will use a GPU.  
-3. Download or clone this repo.  
-4. Double-click **`Start-Miner.bat`**.  
-5. Enter your **EVM wallet** when asked — then mining starts.
+1. Install **Python 3.10+** and an **NVIDIA driver** (for GPU mining).  
+2. Download or clone this repo.  
+3. Double-click **`Start-Miner.bat`** (or run `.\Start-Miner.ps1`).  
+4. Enter your **EVM wallet** when asked — mining starts.
+
+```powershell
+git clone https://github.com/badnob/xnminer.git
+cd xnminer
+.\Start-Miner.bat
+```
 
 ### Linux
 
-1. Install **Python 3.10+**, NVIDIA driver, **CUDA Toolkit**, and **cmake**.  
+1. Install **Python 3.10+**, NVIDIA driver, **CUDA Toolkit** (`nvcc`), and **cmake**.  
 2. Clone this repo.  
-3. Build the engine, then start:
+3. Build the CUDA engine, then start:
 
 ```bash
+git clone https://github.com/badnob/xnminer.git
+cd xnminer
 chmod +x start-miner.sh native/build.sh
 ./native/build.sh
 ./start-miner.sh
 ```
 
-4. Enter your **EVM wallet** when asked — then mining starts.
+4. Enter your **EVM wallet** when asked — mining starts.
 
-The launcher creates `miner.ini`, installs Python packages, and prompts for your wallet. No manual config needed for a normal start.
+### Both platforms
 
-**Ctrl+C** stops mining, flushes the queue when possible, then exits.
-
-> **Privacy:** Real `miner.ini` (wallet, worker name, local paths) is gitignored. Only `miner.ini.example` is published. Never commit `data/`.
+- Launchers create `miner.ini`, install deps from `requirements.txt`, and prompt for wallet  
+- **Ctrl+C** stops mining and flushes the queue when possible  
+- CPU-only (no CUDA build): set `backend = cpu` in `miner.ini`, then run `python main.py` / `python3 main.py`  
+- **Privacy:** real `miner.ini` and `data/` are gitignored — never commit wallet or local paths  
 
 ---
 
 ## Configuration
 
-Edit **`miner.ini`**:
+Edit **`miner.ini`** (created from `miner.ini.example` on first run):
 
 ```ini
 [account]
@@ -164,33 +140,37 @@ address = 0xYourWallet...
 worker =                # empty = auto unique name (xnminer-xxxxxxxx)
 
 [mining]
-backend = cuda          # cuda | cpu | gpu (legacy)
-strategy = random
+backend = cuda          # cuda | cpu | gpu (legacy Windows)
 
 [efficiency]
-# VRAM policy as % of each GPU's total (auto-scales for all card sizes)
 target_vram_pct = 69.09
-desktop_headroom_pct = 25.12
-emergency_vram_pct = 92.78
-min_headroom_pct = 3.68
-runtime_overhead_pct = 6.28
 max_gpu_temp_c = 75
 warn_gpu_temp_c = 72
 gpu_power_target_pct = 100
 gpu_power_min_pct = 75
 gpu_difficulty_power_enabled = true
+gpu_difficulty_power_full_ratio = 2.0
 gpu_thermal_batch_enabled = true
 gpu_thermal_batch_min_scale = 0.70
 
 [cuda]
-dll_path = native/build/bin/xen_cuda.dll   # Linux auto-resolves libxen_cuda.so
+# Windows default; Linux auto-resolves libxen_cuda.so if this file is missing
+dll_path = native/build/bin/xen_cuda.dll
 max_lanes = 4
 ```
 
-### CLI examples
+| Setting | Role |
+|---------|------|
+| `gpu_power_target_pct` / `gpu_power_min_pct` | Power band; eases toward min as difficulty rises |
+| `gpu_difficulty_power_full_ratio` | Difficulty multiple of reference where power hits min (default 2×) |
+| `gpu_thermal_batch_min_scale` | Lowest batch scale near max temp (default 0.70) |
+| `dll_path` | Native library path (platform fallbacks apply) |
+
+### CLI
 
 ```bash
-python main.py                 # Windows: python   Linux: python3
+# Windows: python    Linux: python3
+python main.py
 python main.py --backend cpu
 python main.py --no-dashboard
 python main.py --diagnose
@@ -203,17 +183,17 @@ python main.py --max-seconds 3600
 
 ### Windows
 
-Requires **Visual Studio C++ tools**, **CMake**, **Ninja** (or VS generator), and the **CUDA Toolkit**.
+Needs Visual Studio C++ tools, CMake, Ninja (or VS generator), CUDA Toolkit:
 
 ```powershell
 .\native\build.ps1
 ```
 
-Output: `native\build\bin\xen_cuda.dll`
+→ `native\build\bin\xen_cuda.dll`
 
 ### Linux
 
-Requires **cmake**, a C++ compiler, and the **CUDA Toolkit** (`nvcc` on `PATH`).
+Needs cmake, g++/clang, CUDA Toolkit (`nvcc` on `PATH`):
 
 ```bash
 ./native/build.sh
@@ -221,9 +201,9 @@ Requires **cmake**, a C++ compiler, and the **CUDA Toolkit** (`nvcc` on `PATH`).
 CMAKE_CUDA_ARCHITECTURES=86 ./native/build.sh
 ```
 
-Output: `native/build/bin/libxen_cuda.so`
+→ `native/build/bin/libxen_cuda.so`
 
-> The engine CMake may target newer architectures (e.g. sm_90 / sm_120). For older GPUs, rebuild with `CMAKE_CUDA_ARCHITECTURES` (e.g. 75, 86, 89).
+> Default CMake architectures may target newer GPUs (e.g. sm_90 / sm_120). For older cards set `CMAKE_CUDA_ARCHITECTURES` (75, 86, 89, …).
 
 ---
 
@@ -231,18 +211,19 @@ Output: `native/build/bin/libxen_cuda.so`
 
 ```text
 ├── main.py                 # Entry point
-├── miner.ini               # Config
+├── miner.ini.example       # Published config template
 ├── Start-Miner.bat / .ps1  # Windows launchers
 ├── start-miner.sh          # Linux launcher
+├── HOWTO.md                # Beginner walkthrough (Win + Linux)
 ├── core/                   # Supervisor, models, instance lock
-├── mining/                 # CUDA / CPU backends, block types, Argon2
-├── monitoring/             # Dashboard, wallet, uptime, rewards, woodyminer
-├── efficiency/             # VRAM %, temp guard, power boost, lanes
+├── mining/                 # CUDA / CPU backends, native lib resolve
+├── monitoring/             # Dashboard, wallet, rewards, woodyminer
+├── efficiency/             # VRAM, temp, power, thermal policy
 ├── block_queue/            # Persist + flush submit queue
 ├── networking/             # Difficulty poller, submitter
 ├── strategies/             # Key generation strategies
-├── native/                 # CUDA engine source + build (.ps1 / .sh)
-├── data/                   # Runtime DB, logs, stats (local)
+├── native/                 # Engine source + build.ps1 / build.sh
+├── data/                   # Runtime DB, logs (local only)
 └── tests/                  # Unit tests
 ```
 
@@ -250,25 +231,27 @@ Output: `native/build/bin/libxen_cuda.so`
 
 ## Limitations
 
-- **No NVIDIA drivers bundled** — install from NVIDIA for CUDA mining
-- **CUDA binary** may need a rebuild for older GPU architectures
-- **No automatic CPU fallback** if CUDA fails — set `backend = cpu` in `miner.ini`
-- **Linux CUDA** requires a local `./native/build.sh` (`.so` is not always prebuilt)
-- Network RPC for wallet balances can time out; dashboard shows cached/stale state when needed
+- No NVIDIA drivers bundled  
+- CUDA binary may need rebuild for your GPU architecture  
+- No automatic CPU fallback if CUDA fails — set `backend = cpu`  
+- Linux GPU mining expects a successful `./native/build.sh`  
+- Network RPC for balances can time out; dashboard may show cached values  
 
 ---
 
 ## License / credits
 
 - Miner UI & orchestration: **Tony.x1**
-- Native hashing roots / reference behaviour: XenBlocks ecosystem and open-source miner patterns (Argon2id, XEN11 / XUNI / superblock rules)
+- Native hashing / block rules: XenBlocks ecosystem and open-source miner patterns (Argon2id, XEN11 / XUNI / superblock)
 
 ---
 
 ## Support
 
-- Logs: `data/session.log`
-- Queue / DB: `data/blocks.db`, `data/queue.jsonl`
-- Stats: `data/mining_stats_history.json`, `data/balance_history.json`, `data/server_uptime.json`
+| Item | Path |
+|------|------|
+| Session log | `data/session.log` |
+| Queue / DB | `data/blocks.db`, `data/queue.jsonl` |
+| Stats | `data/mining_stats_history.json`, `data/balance_history.json` |
 
-If you hit issues, include the relevant log lines and your GPU model + `backend` setting.
+When reporting issues, include log lines, **OS (Windows/Linux)**, GPU model, and `backend` from `miner.ini`.

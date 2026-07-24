@@ -2,78 +2,109 @@
 
 **XenBlocks Miner by Tony.x1** — GPU miner for [XenBlocks](https://xenblocks.io) on **Windows** and **Linux**.
 
+| | Windows | Linux |
+|--|---------|--------|
+| **Start** | `Start-Miner.bat` | `./start-miner.sh` |
+| **CUDA lib** | `xen_cuda.dll` | `libxen_cuda.so` |
+| **Build** | `.\native\build.ps1` | `./native/build.sh` |
+
+More detail: **[README.md](README.md)**
+
 ---
 
 ## What you need
 
-1. **Windows** or **Linux** PC  
-2. **Python 3.10+**  
-   - Windows: [python.org](https://www.python.org/downloads/) — tick **“Add Python to PATH”**  
-   - Linux: `sudo apt install python3 python3-pip python3-venv` (or distro equivalent)  
-3. **NVIDIA GPU + drivers**  
-   - Windows: [NVIDIA](https://www.nvidia.com/Download/index.aspx)  
-   - Linux: proprietary NVIDIA driver + CUDA Toolkit to **build** the native engine  
-   - This miner does **not** ship NVIDIA drivers  
-4. An **EVM wallet** address (`0x` + 40 hex characters) for rewards  
+### Both platforms
 
-No NVIDIA GPU? You can mine on **CPU** (much slower) — set `backend = cpu` in `miner.ini` after the first run.
+1. **Python 3.10+**  
+2. **NVIDIA GPU + drivers** (for CUDA mining) — this project does **not** ship drivers  
+3. An **EVM wallet** (`0x` + 40 hex characters) for rewards  
+
+No NVIDIA GPU? Use **CPU** mining (slower): set `backend = cpu` in `miner.ini` after first run.
+
+### Windows extras
+
+- Python from [python.org](https://www.python.org/downloads/) — tick **Add Python to PATH**  
+- NVIDIA driver from [NVIDIA](https://www.nvidia.com/Download/index.aspx)  
+
+### Linux extras
+
+- `python3`, `python3-pip` (and usually `python3-venv`)  
+- Proprietary NVIDIA driver  
+- **CUDA Toolkit** (`nvcc`) + **cmake** to build the native engine  
+
+```bash
+# Debian/Ubuntu example
+sudo apt update
+sudo apt install python3 python3-pip python3-venv cmake build-essential
+# Install NVIDIA driver + CUDA Toolkit from NVIDIA or your distro docs
+```
 
 ---
 
-## Setup (once)
+## Setup & run
 
 ### Windows
 
 1. Download or clone this repo.  
-2. Double-click **`Start-Miner.bat`**.
+2. Double-click **`Start-Miner.bat`**.  
+3. Enter your wallet when prompted.
+
+```powershell
+git clone https://github.com/badnob/xnminer.git
+cd xnminer
+.\Start-Miner.bat
+```
 
 ### Linux
 
 1. Clone this repo.  
-2. Build the CUDA engine (once, if using GPU):
+2. Build CUDA (once, for GPU mining).  
+3. Start the miner.  
+4. Enter your wallet when prompted.
 
 ```bash
-chmod +x native/build.sh start-miner.sh
+git clone https://github.com/badnob/xnminer.git
+cd xnminer
+chmod +x start-miner.sh native/build.sh
 ./native/build.sh
-# older GPUs example:  CMAKE_CUDA_ARCHITECTURES=86 ./native/build.sh
-```
-
-3. Start mining:
-
-```bash
+# older GPUs: CMAKE_CUDA_ARCHITECTURES=86 ./native/build.sh
 ./start-miner.sh
 ```
 
-The launcher will:
+### What the launcher does (both)
 
-- create `miner.ini` if needed  
-- install Python packages from `requirements.txt`  
-- ask for your **EVM wallet** once, then save it  
-- create a **unique miner name** (e.g. `xnminer-a1b2c3d4`) so Woodyminer / XenBlockScan stats do not clash with other users  
+- Creates `miner.ini` from the example if needed  
+- Installs Python packages from `requirements.txt`  
+- Asks for your **EVM wallet** once and saves it  
+- Creates a **unique miner name** (e.g. `xnminer-a1b2c3d4`) so stats don’t clash  
 
-You do **not** need to edit config files to start mining. Optional: set your own name later in `miner.ini` (`worker` / `woodyminer_custom_name`).
+Optional later: set your own name in `miner.ini` (`worker` / `woodyminer_custom_name`).
 
 ---
 
-## Run
+## Controls
 
-**Windows** — double-click:
+- **Ctrl+C** — stop mining, flush queue when possible, exit  
+- Live dashboard in the console  
+- Logs: `data/session.log`  
 
-```text
-Start-Miner.bat
-```
-
-**Linux**:
+### Manual start (both)
 
 ```bash
-./start-miner.sh
-# or
+# Windows
+python main.py
+
+# Linux
 python3 main.py
 ```
 
-- First run → enter wallet → mining starts  
-- Live dashboard in the console  
-- **Ctrl+C** stops mining and flushes any queued blocks  
+CPU only:
+
+```bash
+python main.py --backend cpu     # Windows
+python3 main.py --backend cpu    # Linux
+```
 
 ---
 
@@ -81,38 +112,33 @@ python3 main.py
 
 | Check | Where |
 |--------|--------|
-| Hashrate | Dashboard speed / H/s |
+| Hashrate | Dashboard H/s |
 | Accepts | Accepted / local accepts |
 | Network | Dashboard network status |
 | Logs | `data/session.log` |
-| Away from PC | [woodyminer.com](https://woodyminer.com) (enabled by default) |
+| Away from PC | [woodyminer.com](https://woodyminer.com) (on by default) |
 
 ---
 
 ## Common issues
 
-| Problem | Fix |
-|---------|-----|
-| “Python not found” | Windows: reinstall with **Add to PATH**. Linux: install `python3` / `python3-pip` |
-| CUDA / library errors | Install NVIDIA driver; on Linux rebuild with `./native/build.sh` |
-| No `libxen_cuda.so` | Run `./native/build.sh` (needs cmake + CUDA Toolkit) |
-| No GPU | Set `backend = cpu` in `miner.ini` |
-| Another miner running | Close the other process, or delete `data/miner.lock` if stale |
-| Power limit fails | Run as admin (Windows) or root/`nvidia-smi -pl` permission (Linux) |
-| Wrong wallet | Edit `miner.ini` → `[account] address = 0x...` |
+| Problem | Windows | Linux |
+|---------|---------|--------|
+| Python not found | Reinstall with **Add to PATH** | Install `python3` / `pip` |
+| CUDA / library missing | Install driver; rebuild `.\native\build.ps1` | `./native/build.sh` (cmake + CUDA) |
+| No GPU | `backend = cpu` in `miner.ini` | Same |
+| Another miner running | Close other window; delete `data\miner.lock` if stale | Same (`data/miner.lock`) |
+| Power limit fails | Run as Administrator | Permissions for `nvidia-smi -pl` / root |
+| Wrong wallet | Edit `miner.ini` → `[account] address` | Same |
 
 ---
 
-## Safety
+## Safety (both)
 
-- VRAM limits scale with **your** GPU size (desktop headroom kept free).  
-- Temp guard + difficulty-aware power / thermal batch derate cool the card under load.  
-- Run **only one** copy of this miner per machine.
+- VRAM limits scale with **your** GPU size  
+- Temp guard + difficulty-aware power + thermal batch derate under load  
+- Run **only one** miner instance per machine  
 
 ---
-
-## More detail
-
-See **`README.md`** for features, advanced config, and project layout.
 
 Happy mining.
