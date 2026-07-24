@@ -181,6 +181,7 @@ def ensure_miner_ini_exists(ini_path: Path | None = None) -> Path:
                 "enabled = false",
                 "",
                 "[cuda]",
+                # Platform default applied at load time if file missing
                 "dll_path = native/build/bin/xen_cuda.dll",
                 "batch_size = 0",
                 "max_batch_size = 0",

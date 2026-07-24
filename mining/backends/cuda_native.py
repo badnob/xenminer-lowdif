@@ -20,6 +20,7 @@ from efficiency.cuda_lane_policy import (
 )
 from efficiency.vram_policy import VramCaps, resolve_vram_caps
 from efficiency.thermal_policy import apply_batch_scale, clamp_float, thermal_batch_scale
+from mining.native_lib import lane_lib_name
 from mining.vram_batch import (
     CUDA_ENGINE_RESERVE_BYTES,
     CudaVramPlan,
@@ -173,7 +174,7 @@ class CudaNativeBackend(MinerBackend):
         return self._thermal_batch_scale
 
     def _lane_dll_path(self, lane: int) -> Path:
-        return self._lane_workers_dir / f"lane{lane}.dll"
+        return self._lane_workers_dir / lane_lib_name(lane)
 
     def _ensure_lane_dll(self, lane: int) -> Path:
         src = Path(self.settings.cuda_dll_path)

@@ -91,6 +91,8 @@ xenblocks_db =
 enabled = false
 
 [cuda]
+# Windows: native/build/bin/xen_cuda.dll
+# Linux:   native/build/bin/libxen_cuda.so  (auto-resolved if this path is missing)
 dll_path = native/build/bin/xen_cuda.dll
 batch_size = 0
 max_batch_size = 0

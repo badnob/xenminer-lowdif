@@ -767,7 +767,11 @@ class Supervisor:
                     f"Stop other GPU miners first (target is {target}MiB / "
                     f"{self.settings.target_vram_pct:.0f}% of {total}MiB)."
                 )
-            self._log("info", "CUDA native mode: xen_cuda.dll - VRAM/temp watchdog active")
+            lib_name = getattr(self.settings.cuda_dll_path, "name", "xen_cuda")
+            self._log(
+                "info",
+                f"CUDA native mode: {lib_name} - VRAM/temp watchdog active",
+            )
         elif self.is_legacy_gpu:
             self._kill_stray_xenblocks()
             self._log("info", "Legacy GPU mode: xenblocks.exe supervised")

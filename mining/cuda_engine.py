@@ -1,13 +1,20 @@
-"""ctypes bindings for native xen_cuda.dll GPU engine."""
+"""ctypes bindings for native xen_cuda GPU engine (.dll / .so)."""
 
 from __future__ import annotations
 
 import ctypes
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from mining.native_lib import (
+    build_hint,
+    default_cuda_lib_path,
+    resolve_cuda_lib_path,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DLL = ROOT / "native" / "build" / "bin" / "xen_cuda.dll"
+DEFAULT_DLL = default_cuda_lib_path()
 
 XEN_CUDA_MAX_MATCHES = 32
 XEN_CUDA_KEY_LEN = 65
@@ -67,12 +74,18 @@ class CudaBatchResult:
 
 class CudaEngine:
     def __init__(self, dll_path: Path | None = None) -> None:
-        path = dll_path or DEFAULT_DLL
+        path = resolve_cuda_lib_path(dll_path) if dll_path else resolve_cuda_lib_path()
         if not path.exists():
             raise FileNotFoundError(
-                f"xen_cuda.dll not found at {path}. Run native/build.ps1 first."
+                f"Native CUDA library not found at {path}. {build_hint()}"
             )
-        self._lib = ctypes.CDLL(str(path))
+        # Linux often needs RTLD_GLOBAL so CUDA runtime symbols resolve.
+        if sys.platform == "win32":
+            self._lib = ctypes.CDLL(str(path))
+        else:
+            mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+            self._lib = ctypes.CDLL(str(path), mode=mode) if mode else ctypes.CDLL(str(path))
+        self._lib_path = path
         self._parallel_lanes = False
         self._bind()
 

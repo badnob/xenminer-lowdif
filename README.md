@@ -10,7 +10,7 @@ Modular **Python + native CUDA** miner for [XenBlocks](https://xenblocks.io) wit
 
 ### Mining engines
 
-- **Native CUDA backend** (`xen_cuda.dll`) — high-performance Argon2id hashing without relying on the legacy `xenblocks.exe` path as primary
+- **Native CUDA backend** (`xen_cuda.dll` / `libxen_cuda.so`) — high-performance Argon2id hashing without relying on the legacy `xenblocks.exe` path as primary
 - **CPU backend** — pure Python Argon2 mining when GPU/CUDA isn’t available
 - **Legacy GPU bridge** — optional supervision of external `xenblocks.exe` + DB watcher
 - **Merged mining** of **XNM**, **XUNI**, and **XBLK** (superblocks) in one hash stream
@@ -101,7 +101,7 @@ This is the “keep the card full when difficulty dips” path — not a fixed s
 ### Developer-friendly
 
 - Modular layout: `core`, `mining`, `monitoring`, `efficiency`, `block_queue`, `networking`
-- Native CUDA engine build scripts (`native/build.ps1`)
+- Native CUDA engine build scripts (`native/build.ps1`, `native/build.sh`)
 - Unit tests for rewards, VRAM policy, block types, queue, dashboard, and more
 
 ---
@@ -110,24 +110,41 @@ This is the “keep the card full when difficulty dips” path — not a fixed s
 
 | Component | Notes |
 |-----------|--------|
-| **Python** | 3.10+ (tick **Add to PATH** when installing) |
-| **Windows** | Double-click `Start-Miner.bat` |
-| **NVIDIA GPU + driver** | For CUDA mining — install from [NVIDIA](https://www.nvidia.com/Download/index.aspx) |
+| **Python** | 3.10+ |
+| **Windows or Linux** | `Start-Miner.bat` / `./start-miner.sh` |
+| **NVIDIA GPU + driver** | For CUDA mining |
+| **CUDA Toolkit + cmake** | To build the native engine on Linux (and to rebuild on Windows) |
 | **EVM wallet** | `0x…` address for rewards (prompted on first run) |
 
-> This project does **not** ship NVIDIA drivers. A prebuilt `xen_cuda.dll` is included for Windows CUDA mining.
+> This project does **not** ship NVIDIA drivers. Windows may ship a prebuilt `xen_cuda.dll`; Linux builds `libxen_cuda.so` via `./native/build.sh`.
 
 ---
 
-## Quick start (Windows)
+## Quick start
 
 **Full walkthrough:** **[HOWTO.md](HOWTO.md)**
+
+### Windows
 
 1. Install **Python 3.10+** ([python.org](https://www.python.org/downloads/) — add to PATH).  
 2. Install an **NVIDIA driver** if you will use a GPU.  
 3. Download or clone this repo.  
 4. Double-click **`Start-Miner.bat`**.  
 5. Enter your **EVM wallet** when asked — then mining starts.
+
+### Linux
+
+1. Install **Python 3.10+**, NVIDIA driver, **CUDA Toolkit**, and **cmake**.  
+2. Clone this repo.  
+3. Build the engine, then start:
+
+```bash
+chmod +x start-miner.sh native/build.sh
+./native/build.sh
+./start-miner.sh
+```
+
+4. Enter your **EVM wallet** when asked — then mining starts.
 
 The launcher creates `miner.ini`, installs Python packages, and prompts for your wallet. No manual config needed for a normal start.
 
@@ -166,14 +183,14 @@ gpu_thermal_batch_enabled = true
 gpu_thermal_batch_min_scale = 0.70
 
 [cuda]
-dll_path = native/build/bin/xen_cuda.dll
+dll_path = native/build/bin/xen_cuda.dll   # Linux auto-resolves libxen_cuda.so
 max_lanes = 4
 ```
 
 ### CLI examples
 
-```bat
-python main.py
+```bash
+python main.py                 # Windows: python   Linux: python3
 python main.py --backend cpu
 python main.py --no-dashboard
 python main.py --diagnose
@@ -184,6 +201,8 @@ python main.py --max-seconds 3600
 
 ## Build CUDA engine
 
+### Windows
+
 Requires **Visual Studio C++ tools**, **CMake**, **Ninja** (or VS generator), and the **CUDA Toolkit**.
 
 ```powershell
@@ -192,7 +211,19 @@ Requires **Visual Studio C++ tools**, **CMake**, **Ninja** (or VS generator), an
 
 Output: `native\build\bin\xen_cuda.dll`
 
-> The engine CMake may target newer architectures (e.g. sm_90 / sm_120). For older GPUs, rebuild with additional `CMAKE_CUDA_ARCHITECTURES` values (e.g. 75, 86, 89).
+### Linux
+
+Requires **cmake**, a C++ compiler, and the **CUDA Toolkit** (`nvcc` on `PATH`).
+
+```bash
+./native/build.sh
+# e.g. RTX 30-series:
+CMAKE_CUDA_ARCHITECTURES=86 ./native/build.sh
+```
+
+Output: `native/build/bin/libxen_cuda.so`
+
+> The engine CMake may target newer architectures (e.g. sm_90 / sm_120). For older GPUs, rebuild with `CMAKE_CUDA_ARCHITECTURES` (e.g. 75, 86, 89).
 
 ---
 
@@ -202,6 +233,7 @@ Output: `native\build\bin\xen_cuda.dll`
 ├── main.py                 # Entry point
 ├── miner.ini               # Config
 ├── Start-Miner.bat / .ps1  # Windows launchers
+├── start-miner.sh          # Linux launcher
 ├── core/                   # Supervisor, models, instance lock
 ├── mining/                 # CUDA / CPU backends, block types, Argon2
 ├── monitoring/             # Dashboard, wallet, uptime, rewards, woodyminer
@@ -209,7 +241,7 @@ Output: `native\build\bin\xen_cuda.dll`
 ├── block_queue/            # Persist + flush submit queue
 ├── networking/             # Difficulty poller, submitter
 ├── strategies/             # Key generation strategies
-├── native/                 # CUDA engine source + build
+├── native/                 # CUDA engine source + build (.ps1 / .sh)
 ├── data/                   # Runtime DB, logs, stats (local)
 └── tests/                  # Unit tests
 ```
@@ -221,7 +253,7 @@ Output: `native\build\bin\xen_cuda.dll`
 - **No NVIDIA drivers bundled** — install from NVIDIA for CUDA mining
 - **CUDA binary** may need a rebuild for older GPU architectures
 - **No automatic CPU fallback** if CUDA fails — set `backend = cpu` in `miner.ini`
-- **Windows-first** launchers; Python core may run elsewhere with manual setup
+- **Linux CUDA** requires a local `./native/build.sh` (`.so` is not always prebuilt)
 - Network RPC for wallet balances can time out; dashboard shows cached/stale state when needed
 
 ---

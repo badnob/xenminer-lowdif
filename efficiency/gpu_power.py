@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 
 from core.models import GpuSnapshot
 from efficiency.thermal_policy import (
@@ -146,7 +147,7 @@ class GpuPowerBooster:
             f"(target {self._effective_target_pct}% of {max_mw / 1000:.0f}W cap, "
             f"range {self._min_pct}–{self._target_pct}%)",
         )
-        if self._windows_performance_mode:
+        if self._windows_performance_mode and sys.platform == "win32":
             self._enable_windows_high_performance()
         return True
 
@@ -266,7 +267,7 @@ class GpuPowerBooster:
                 "info",
                 f"GPU power restored to {self._original_limit_mw / 1000:.0f}W",
             )
-        if self._saved_power_scheme:
+        if self._saved_power_scheme and sys.platform == "win32":
             try:
                 subprocess.run(
                     ["powercfg", "/setactive", self._saved_power_scheme],

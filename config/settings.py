@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from mining.native_lib import default_cuda_lib_relative, resolve_cuda_lib_path
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INI = ROOT / "miner.ini"
 
@@ -132,7 +134,8 @@ def load_settings(ini_path: Path | None = None) -> Settings:
     cuda = cp["cuda"] if "cuda" in cp else {}
 
     exe_raw = gpu.get("xenblocks_exe", "").strip()
-    dll_raw = cuda.get("dll_path", "native/build/bin/xen_cuda.dll").strip()
+    dll_raw = cuda.get("dll_path", default_cuda_lib_relative()).strip()
+    cuda_lib = resolve_cuda_lib_path(dll_raw)
     return Settings(
         address=acc.get("address", "").strip(),
         worker=acc.get("worker", "").strip(),
@@ -228,7 +231,7 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         xenblocks_exe=Path(exe_raw) if exe_raw else None,
         xenblocks_db=Path(gpu.get("xenblocks_db", "").strip()) if gpu.get("xenblocks_db", "").strip() else None,
         gpu_enabled=gpu.getboolean("enabled", fallback=False),
-        cuda_dll_path=ROOT / dll_raw,
+        cuda_dll_path=cuda_lib,
         cuda_batch_size=int(cuda.get("batch_size", "0")),
         cuda_max_batch_size=int(cuda.get("max_batch_size", "0")),
         # 0 = use runtime_overhead_pct of GPU total.
