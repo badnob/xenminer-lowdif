@@ -69,6 +69,8 @@ This is the “keep the card full when difficulty dips” path — not a fixed s
 - **Temp guard**: warn / graceful cooldown / auto-restart
 - **Lane cap reduction** after thermal stress during multi-lane harvest; restore when cool
 - **NVML power boost** toward configured % of card power limit; ease near warn temp
+- **Difficulty-aware power**: as difficulty rises above `vram_reference_difficulty`, power target eases within `gpu_power_min_pct`–`gpu_power_target_pct` (full ease at `gpu_difficulty_power_full_ratio`× reference)
+- **Thermal batch derate**: near warn/max temp, CUDA batch soft-scales down (never below `gpu_thermal_batch_min_scale`)
 - Optional Windows performance mode for mining sessions
 - Continuous NVML monitoring (temp, VRAM, util, power) via **pynvml**  
   (uses the **installed** NVIDIA driver — **no drivers are shipped**)
@@ -158,6 +160,10 @@ runtime_overhead_pct = 6.28
 max_gpu_temp_c = 75
 warn_gpu_temp_c = 72
 gpu_power_target_pct = 100
+gpu_power_min_pct = 75
+gpu_difficulty_power_enabled = true
+gpu_thermal_batch_enabled = true
+gpu_thermal_batch_min_scale = 0.70
 
 [cuda]
 dll_path = native/build/bin/xen_cuda.dll

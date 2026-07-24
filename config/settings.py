@@ -42,6 +42,15 @@ class Settings:
     gpu_cooldown_s: int
     gpu_power_boost_enabled: bool
     gpu_power_target_pct: int
+    # Floor for difficulty/thermal power ease (clamped ≤ target, ≥ 50).
+    gpu_power_min_pct: int
+    # Scale power target down as difficulty rises above vram_reference_difficulty.
+    gpu_difficulty_power_enabled: bool
+    # Difficulty multiple of reference where power hits min_pct (e.g. 2.0 = 2×).
+    gpu_difficulty_power_full_ratio: float
+    # Soft-shrink CUDA batch as temp approaches warn/max (scale ≥ min).
+    gpu_thermal_batch_enabled: bool
+    gpu_thermal_batch_min_scale: float
     gpu_windows_performance_mode: bool
     temp_watch_path: Path
     cpu_lanes: int
@@ -166,6 +175,19 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         gpu_cooldown_s=int(eff.get("gpu_cooldown_s", "45")),
         gpu_power_boost_enabled=eff.getboolean("gpu_power_boost_enabled", fallback=True),
         gpu_power_target_pct=int(eff.get("gpu_power_target_pct", "100")),
+        gpu_power_min_pct=int(eff.get("gpu_power_min_pct", "75")),
+        gpu_difficulty_power_enabled=eff.getboolean(
+            "gpu_difficulty_power_enabled", fallback=True
+        ),
+        gpu_difficulty_power_full_ratio=float(
+            eff.get("gpu_difficulty_power_full_ratio", "2.0")
+        ),
+        gpu_thermal_batch_enabled=eff.getboolean(
+            "gpu_thermal_batch_enabled", fallback=True
+        ),
+        gpu_thermal_batch_min_scale=float(
+            eff.get("gpu_thermal_batch_min_scale", "0.70")
+        ),
         gpu_windows_performance_mode=eff.getboolean(
             "gpu_windows_performance_mode", fallback=True
         ),

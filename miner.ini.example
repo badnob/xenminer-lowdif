@@ -39,7 +39,15 @@ max_gpu_temp_c = 75
 warn_gpu_temp_c = 72
 gpu_cooldown_s = 60
 gpu_power_boost_enabled = true
+# Power target band: eases toward min as difficulty rises above reference
 gpu_power_target_pct = 100
+gpu_power_min_pct = 75
+gpu_difficulty_power_enabled = true
+# At 2× reference difficulty, power target is at gpu_power_min_pct
+gpu_difficulty_power_full_ratio = 2.0
+# Soft-shrink CUDA batch as temp nears warn/max (never below min scale)
+gpu_thermal_batch_enabled = true
+gpu_thermal_batch_min_scale = 0.70
 gpu_windows_performance_mode = true
 cpu_lanes = 2
 lane_ramp_step = 1

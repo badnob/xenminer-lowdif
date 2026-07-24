@@ -150,6 +150,10 @@ class Supervisor:
                 max_temp_c=settings.max_gpu_temp_c,
                 logger=self.logger if not use_dashboard else None,
                 windows_performance_mode=settings.gpu_windows_performance_mode,
+                min_pct=settings.gpu_power_min_pct,
+                difficulty_power_enabled=settings.gpu_difficulty_power_enabled,
+                reference_difficulty=settings.vram_reference_difficulty,
+                full_derate_ratio=settings.gpu_difficulty_power_full_ratio,
             )
         self._cooldown_until = 0.0
         self._last_gpu_warn_at = 0.0
@@ -336,6 +340,8 @@ class Supervisor:
             if diff >= ref and old_diff < ref:
                 self._maybe_restore_cuda_lane_cap(diff)
             self._begin_difficulty_transition(old_diff, diff)
+        if self._power_booster is not None:
+            self._power_booster.set_difficulty(diff)
         return diff
 
     def _sync_dashboard_stats(self, snap=None) -> None:
@@ -1286,11 +1292,30 @@ class Supervisor:
                     self.refresh_network()
                     last_net_check = now
 
-                if (
-                    self._power_booster is not None
-                    and now - last_power_tune >= self.settings.sample_interval_s
-                ):
-                    self._power_booster.adjust(snap)
+                if now - last_power_tune >= self.settings.sample_interval_s:
+                    if self._power_booster is not None:
+                        self._power_booster.adjust(snap)
+                    if (
+                        self.is_cuda_native
+                        and snap is not None
+                        and hasattr(self.backend, "update_thermal_batch_from_temp")
+                    ):
+                        old_scale = getattr(self.backend, "thermal_batch_scale", 1.0)
+                        new_scale = self.backend.update_thermal_batch_from_temp(
+                            snap.temperature_c
+                        )
+                        if abs(new_scale - old_scale) >= 0.005:
+                            self._log(
+                                "info",
+                                f"Thermal batch scale {old_scale:.2f} -> {new_scale:.2f} "
+                                f"(temp {snap.temperature_c}C, batch="
+                                f"{getattr(self.backend, 'batch_size', 0)})",
+                            )
+                            if self.dashboard and hasattr(self.backend, "batch_size"):
+                                self.dashboard.set_cuda_batch(
+                                    self.backend.batch_size,
+                                    getattr(self.backend, "active_lanes", 1),
+                                )
                     last_power_tune = now
 
                 if self.is_gpu:

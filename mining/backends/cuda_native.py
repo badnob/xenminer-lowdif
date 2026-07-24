@@ -19,6 +19,7 @@ from efficiency.cuda_lane_policy import (
     save_lane_policy,
 )
 from efficiency.vram_policy import VramCaps, resolve_vram_caps
+from efficiency.thermal_policy import apply_batch_scale, clamp_float, thermal_batch_scale
 from mining.vram_batch import (
     CUDA_ENGINE_RESERVE_BYTES,
     CudaVramPlan,
@@ -59,6 +60,10 @@ class CudaNativeBackend(MinerBackend):
         self._lane_engines: dict[int, CudaEngine] = {}
         self._parallel_mode = "sequential"
         self._vram_caps: VramCaps | None = None
+        # Soft thermal derate on planned batch (1.0 = full plan). Stays in
+        # [gpu_thermal_batch_min_scale, 1.0] when enabled via settings.
+        self._thermal_batch_scale = 1.0
+        self._planned_batch_per_lane = settings.cuda_batch_size
 
     def set_vram_caps(self, caps: VramCaps | None) -> None:
         self._vram_caps = caps
@@ -127,8 +132,45 @@ class CudaNativeBackend(MinerBackend):
     def _apply_plan(self, plan: CudaVramPlan) -> None:
         self._vram_plan = plan
         self._lanes = plan.lanes
-        self._batch_per_lane = plan.batch_per_lane
-        self._batch_size = plan.batch_per_lane
+        self._planned_batch_per_lane = plan.batch_per_lane
+        self._batch_per_lane = apply_batch_scale(
+            plan.batch_per_lane, self._thermal_batch_scale
+        )
+        self._batch_size = self._batch_per_lane
+
+    def set_thermal_batch_scale(self, scale: float) -> float:
+        """
+        Soft-limit batch size for heat (within configured min..1.0).
+
+        Re-applies against the last VRAM plan so live mining picks it up.
+        """
+        floor = clamp_float(self.settings.gpu_thermal_batch_min_scale, 0.50, 1.0)
+        new_scale = clamp_float(float(scale), floor, 1.0)
+        if abs(new_scale - self._thermal_batch_scale) < 0.005:
+            return self._thermal_batch_scale
+        self._thermal_batch_scale = new_scale
+        if self._planned_batch_per_lane > 0:
+            self._batch_per_lane = apply_batch_scale(
+                self._planned_batch_per_lane, self._thermal_batch_scale
+            )
+            self._batch_size = self._batch_per_lane
+        return self._thermal_batch_scale
+
+    def update_thermal_batch_from_temp(self, temperature_c: int) -> float:
+        """Compute and apply thermal batch scale from live GPU temp."""
+        if not self.settings.gpu_thermal_batch_enabled:
+            return self.set_thermal_batch_scale(1.0)
+        scale = thermal_batch_scale(
+            temperature_c,
+            self.settings.warn_gpu_temp_c,
+            self.settings.max_gpu_temp_c,
+            min_scale=self.settings.gpu_thermal_batch_min_scale,
+        )
+        return self.set_thermal_batch_scale(scale)
+
+    @property
+    def thermal_batch_scale(self) -> float:
+        return self._thermal_batch_scale
 
     def _lane_dll_path(self, lane: int) -> Path:
         return self._lane_workers_dir / f"lane{lane}.dll"
