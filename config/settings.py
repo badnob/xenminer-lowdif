@@ -245,7 +245,7 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         .lower()
         in ("1", "true", "yes", "on"),
         clock_low_difficulty=int(eff.get("clock_low_difficulty", "100")),
-        clock_batch_fill_low=float(eff.get("clock_batch_fill_low", "0.72")),
+        clock_batch_fill_low=float(eff.get("clock_batch_fill_low", "0.60")),
         clock_batch_fill_ref=float(eff.get("clock_batch_fill_ref", "0.95")),
         clock_batch_fill_high=float(eff.get("clock_batch_fill_high", "0.85")),
         gpu_thermal_batch_enabled=eff.getboolean(

@@ -188,7 +188,7 @@ class CudaNativeBackend(MinerBackend):
                 diff,
                 self.settings.vram_reference_difficulty,
                 low_difficulty=int(getattr(self.settings, "clock_low_difficulty", 100)),
-                fill_at_low=float(getattr(self.settings, "clock_batch_fill_low", 0.72)),
+                fill_at_low=float(getattr(self.settings, "clock_batch_fill_low", 1.0)),
                 fill_at_ref=float(getattr(self.settings, "clock_batch_fill_ref", 0.95)),
                 fill_at_high=float(getattr(self.settings, "clock_batch_fill_high", 0.85)),
                 full_derate_ratio=float(

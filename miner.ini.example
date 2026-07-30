@@ -58,10 +58,13 @@ gpu_power_target_pct = 100
 gpu_power_min_pct = 65
 gpu_difficulty_power_enabled = true
 gpu_difficulty_power_full_ratio = 1.9
-# Clock curve — leave VRAM headroom at dif 100 so SM clocks can climb
+# Clock curve + max-lanes harvest for low dif
+# At dif <= 100: full VRAM budget + MAX lanes possible for best speeds
+# (user: lanes do not raise board temps at low dif; temps rise with dif >100)
+# As dif rises: curve slopes power, fill, and lanes down (stays under board 90C cap)
 clock_curve_enabled = true
 clock_low_difficulty = 100
-clock_batch_fill_low = 0.72
+clock_batch_fill_low = 1.0
 clock_batch_fill_ref = 0.95
 clock_batch_fill_high = 0.85
 # Soft-shrink CUDA batch as temp nears warn/max (never below min scale)

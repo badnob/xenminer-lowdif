@@ -521,7 +521,8 @@ def plan_cuda_batch(
         foreign_used_mib=foreign,
         safety_margin_mib=margin,
     )
-    # Clock curve: use only a fraction of the VRAM batch budget at low dif.
+    # At low dif (<=~100) we use full budget (fill=1.0) + max lanes for best speed.
+    # As dif rises we let the curve reduce fill/lanes/power (board heat rises with dif).
     fill = clamp_fill_fraction(budget_fill_fraction)
     if fill < 0.999:
         budget_bytes = max(1, int(budget_bytes * fill))
@@ -550,8 +551,19 @@ def plan_cuda_batch(
             cap = max(1, min(int(max_lanes), DEFAULT_ABSOLUTE_MAX_LANES))
             lanes = max(1, min(cap, max(boost, cap)))
         else:
-            # fill / boost / default → single full stream (hashrate first)
-            lanes = 1
+            # fill / boost / default at low dif: pack as many lanes as possible
+            # within the (full) VRAM budget and user's max_lanes cap.
+            # User priority: best speeds at low dif via maximum lanes (lanes
+            # do not raise board temps at <=100; heat rises with dif >100).
+            # One resident buffer (seq) gets the full budget for speed; lanes
+            # control prefix coverage.
+            if difficulty <= 150:
+                min_b = max(1, int(min_batch_per_lane))
+                max_by_budget = max(1, budget_bytes // min_b)
+                cap = max(1, min(int(max_lanes), DEFAULT_ABSOLUTE_MAX_LANES))
+                lanes = min(cap, max_by_budget)
+            else:
+                lanes = 1
         conc = 1
         per_lane_budget = max(1, budget_bytes)  # full budget per resident buffer
     else:

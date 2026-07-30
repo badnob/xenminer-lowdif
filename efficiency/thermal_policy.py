@@ -90,7 +90,7 @@ def difficulty_batch_fill_fraction(
     reference_difficulty: int,
     *,
     low_difficulty: int = 100,
-    fill_at_low: float = 0.72,
+    fill_at_low: float = 1.0,
     fill_at_ref: float = 0.95,
     fill_at_high: float = 0.85,
     full_derate_ratio: float = 1.9,
@@ -101,6 +101,8 @@ def difficulty_batch_fill_fraction(
     Low dif Argon2 is less memory-hard per attempt — packing the entire VRAM
     cap can pin the card in a memory/power limited state and hold clocks down.
     Leaving fill headroom at dif~100 often raises SM clocks and real H/s.
+    On 5090-class cards, 0.55–0.65 is frequently needed for absolute peak boost clocks;
+    0.72 is a conservative starting point that still uses substantial work.
 
     - <= low_difficulty → fill_at_low (clock headroom)
     - → reference → fill_at_ref (dense harvest)
