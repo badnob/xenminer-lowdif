@@ -60,9 +60,17 @@ class VramGuard:
             )
 
         if snap.temperature_c >= self.max_temp_c:
+            src = getattr(snap, "temp_source", "gpu") or "gpu"
+            detail = ""
+            if getattr(snap, "gpu_temp_c", 0) or getattr(snap, "board_temp_c", 0):
+                detail = (
+                    f" (die={getattr(snap, 'gpu_temp_c', 0)}C"
+                    f" board={getattr(snap, 'board_temp_c', 0) or 'n/a'}"
+                    f" hotspot={getattr(snap, 'hotspot_temp_c', 0) or 'n/a'})"
+                )
             return GuardAction(
                 "emergency",
-                f"GPU temp {snap.temperature_c}C >= {self.max_temp_c}C",
+                f"Control temp {snap.temperature_c}C[{src}] >= {self.max_temp_c}C{detail}",
                 code="gpu_temp_emergency",
                 should_stop_gpu=True,
                 graceful_stop=True,
@@ -70,9 +78,10 @@ class VramGuard:
             )
 
         if snap.temperature_c >= self.warn_temp_c:
+            src = getattr(snap, "temp_source", "gpu") or "gpu"
             return GuardAction(
                 "warn",
-                f"GPU temp {snap.temperature_c}C >= warn {self.warn_temp_c}C",
+                f"Control temp {snap.temperature_c}C[{src}] >= warn {self.warn_temp_c}C",
                 code="gpu_temp_warn",
             )
 

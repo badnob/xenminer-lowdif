@@ -29,11 +29,15 @@ This fork fills a ~24 GiB VRAM target with **many parallel key-prefix lanes**,
 
 ## Safety ladder
 
-1. Difficulty lane bias (as dif climbs toward reference)
-2. Thermal batch scale (soft shrink batch near warn)
-3. Thermal lane cap (live drop lanes near warn → 1 at max)
-4. Power target ease (difficulty-aware NVML limit)
-5. Hard temp stop + cooldown; optional persistent lane-cap reduction
+1. Multi-sensor control temp = max(die, board, hotspot, memory) when NVML exposes them
+2. High-diff temp tighten (default +0…+12°C from 1.5×→1.9× reference) — catches board heat when only die is readable
+3. Difficulty lane bias (as dif climbs toward reference)
+4. Thermal batch scale (soft shrink batch near warn)
+5. Thermal lane cap (live drop lanes near warn → 1 at max)
+6. Power target ease (difficulty-aware NVML limit)
+7. Hard temp stop + cooldown; optional persistent lane-cap reduction
+
+At **difficulty ~2100** (~1.9× reference 1100) the high-diff proxy is fully on: a 68°C die reading is treated as **80°C** for policy, so warn/max fire before the board sits at 80°C+ unchallenged.
 
 ## Files touched vs upstream
 

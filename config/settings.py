@@ -99,6 +99,11 @@ class Settings:
     # As difficulty climbs toward reference, bias lanes down before VRAM forces it.
     gpu_difficulty_lane_bias: bool
     gpu_difficulty_lane_full_pack_ratio: float
+    # At high difficulty, raise effective control temp (board heat proxy when sensors thin).
+    gpu_high_diff_temp_enabled: bool
+    gpu_high_diff_temp_start_ratio: float
+    gpu_high_diff_temp_full_ratio: float
+    gpu_high_diff_temp_max_tighten_c: int
     submit_cpu_fraction: float
 
     @property
@@ -210,6 +215,18 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         ),
         gpu_difficulty_lane_full_pack_ratio=float(
             eff.get("gpu_difficulty_lane_full_pack_ratio", "0.35")
+        ),
+        gpu_high_diff_temp_enabled=eff.getboolean(
+            "gpu_high_diff_temp_enabled", fallback=True
+        ),
+        gpu_high_diff_temp_start_ratio=float(
+            eff.get("gpu_high_diff_temp_start_ratio", "1.5")
+        ),
+        gpu_high_diff_temp_full_ratio=float(
+            eff.get("gpu_high_diff_temp_full_ratio", "1.9")
+        ),
+        gpu_high_diff_temp_max_tighten_c=int(
+            eff.get("gpu_high_diff_temp_max_tighten_c", "12")
         ),
         gpu_windows_performance_mode=eff.getboolean(
             "gpu_windows_performance_mode", fallback=True

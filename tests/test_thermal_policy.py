@@ -111,6 +111,34 @@ class ThermalPolicyTests(unittest.TestCase):
         self.assertLessEqual(near, mid)
         self.assertEqual(difficulty_lane_bias(12, 1100, 1100), 1)
 
+    def test_high_diff_temp_tighten_at_2100(self) -> None:
+        from efficiency.thermal_policy import (
+            effective_control_temp_c,
+            high_diff_temp_tighten_c,
+        )
+
+        # Below 1.5× ref → no tighten
+        self.assertEqual(
+            high_diff_temp_tighten_c(1100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            0,
+        )
+        self.assertEqual(
+            high_diff_temp_tighten_c(1650, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            0,
+        )
+        # At/above ~1.9× (2090) → full +12C proxy (board heat)
+        self.assertEqual(
+            high_diff_temp_tighten_c(2100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            12,
+        )
+        # Die 68C at dif 2100 → policy 80C → trips max 72
+        self.assertEqual(
+            effective_control_temp_c(
+                68, 2100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12
+            ),
+            80,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

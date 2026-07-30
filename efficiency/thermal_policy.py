@@ -166,6 +166,59 @@ def thermal_lane_cap(
     return clamp_int(int(round(raw)), floor, planned)
 
 
+def high_diff_temp_tighten_c(
+    difficulty: int,
+    reference_difficulty: int,
+    *,
+    start_ratio: float = 1.5,
+    full_ratio: float = 2.0,
+    max_tighten_c: int = 10,
+) -> int:
+    """
+    Degrees to subtract from warn/max (or add to effective temp) at high difficulty.
+
+    Argon2id at 2× reference runs much hotter on the *board* even when die NVML
+    still looks modest. Tightening thresholds as difficulty climbs catches that
+    earlier — especially if board/hotspot sensors are missing.
+
+    - difficulty <= ref * start_ratio → 0
+    - difficulty >= ref * full_ratio → max_tighten_c
+    - linear in between
+    """
+    if difficulty <= 0 or reference_difficulty <= 0 or max_tighten_c <= 0:
+        return 0
+    start = reference_difficulty * max(1.0, float(start_ratio))
+    full = reference_difficulty * max(start_ratio + 0.01, float(full_ratio))
+    if difficulty <= start:
+        return 0
+    if difficulty >= full:
+        return int(max_tighten_c)
+    t = (difficulty - start) / (full - start)
+    return int(round(clamp_float(t, 0.0, 1.0) * max_tighten_c))
+
+
+def effective_control_temp_c(
+    measured_temp_c: int,
+    difficulty: int,
+    reference_difficulty: int,
+    *,
+    start_ratio: float = 1.5,
+    full_ratio: float = 2.0,
+    max_tighten_c: int = 10,
+) -> int:
+    """Measured control temp plus high-diff heat proxy."""
+    if measured_temp_c <= 0:
+        return 0
+    add = high_diff_temp_tighten_c(
+        difficulty,
+        reference_difficulty,
+        start_ratio=start_ratio,
+        full_ratio=full_ratio,
+        max_tighten_c=max_tighten_c,
+    )
+    return int(measured_temp_c) + int(add)
+
+
 def difficulty_lane_bias(
     planned_lanes: int,
     difficulty: int,

@@ -533,7 +533,19 @@ class MinerDashboard:
                 f"VRAM {self._gpu.used_mib:,}/{self._gpu.total_mib:,} MiB"
             )
             extra_parts.append(f"GPU {self._gpu.util_pct}%")
-            extra_parts.append(f"{self._gpu.temperature_c}°C")
+            if hasattr(self._gpu, "temp_summary"):
+                # Prefer multi-sensor line when board/hotspot differ from die.
+                g = self._gpu
+                if (
+                    getattr(g, "board_temp_c", 0)
+                    or getattr(g, "hotspot_temp_c", 0)
+                    or getattr(g, "memory_temp_c", 0)
+                ):
+                    extra_parts.append(g.temp_summary())
+                else:
+                    extra_parts.append(f"{g.temperature_c}°C")
+            else:
+                extra_parts.append(f"{self._gpu.temperature_c}°C")
         extra_parts.append(f"hashes {stats.total_hashes:,}")
         footer.add_row(Text("  |  ".join(extra_parts), style="dim"))
 

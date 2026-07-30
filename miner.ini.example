@@ -56,6 +56,12 @@ gpu_thermal_lane_min = 1
 # As difficulty climbs toward reference, bias lanes down early
 gpu_difficulty_lane_bias = true
 gpu_difficulty_lane_full_pack_ratio = 0.35
+# High-diff board-heat proxy: at ~1.5–1.9× reference, treat temp as hotter
+# so derate triggers even if only die NVML is available (board often runs hotter).
+gpu_high_diff_temp_enabled = true
+gpu_high_diff_temp_start_ratio = 1.5
+gpu_high_diff_temp_full_ratio = 1.9
+gpu_high_diff_temp_max_tighten_c = 12
 gpu_windows_performance_mode = true
 cpu_lanes = 2
 lane_ramp_step = 1

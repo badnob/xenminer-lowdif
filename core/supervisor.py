@@ -8,11 +8,13 @@ from datetime import datetime
 
 from config.settings import Settings
 from core.instance_lock import InstanceLock
-from core.models import BlockHit
+from core.models import BlockHit, GpuSnapshot
+from dataclasses import replace
 from debug.diagnostics import run_diagnostics
 from efficiency.cuda_lane_policy import append_lane_event, record_temp_lane_reduction
 from efficiency.gpu_power import GpuPowerBooster
 from efficiency.lane_manager import LaneManager
+from efficiency.thermal_policy import effective_control_temp_c
 from efficiency.vram_budget import VramBudget
 from efficiency.vram_guard import VramGuard
 from efficiency.vram_policy import VramCaps, resolve_vram_caps
@@ -453,11 +455,45 @@ class Supervisor:
             )
         self._maybe_report_xbs_holdings()
 
+    def _policy_temp_c(self, snap: GpuSnapshot | None) -> int:
+        """
+        Control temperature for thermal policy.
+
+        Uses hottest NVML sensor (die/board/hotspot/mem) already folded into
+        snap.temperature_c, then optionally adds a high-difficulty heat proxy
+        so board-hot / die-cool sessions still derate at e.g. difficulty 2100.
+        """
+        if snap is None:
+            return 0
+        measured = int(snap.temperature_c)
+        if not self.settings.gpu_high_diff_temp_enabled:
+            return measured
+        return effective_control_temp_c(
+            measured,
+            self._mining_difficulty(),
+            self.settings.vram_reference_difficulty,
+            start_ratio=self.settings.gpu_high_diff_temp_start_ratio,
+            full_ratio=self.settings.gpu_high_diff_temp_full_ratio,
+            max_tighten_c=self.settings.gpu_high_diff_temp_max_tighten_c,
+        )
+
+    def _policy_snap(self, snap: GpuSnapshot | None) -> GpuSnapshot | None:
+        """Snapshot with temperature_c replaced by policy control temp."""
+        if snap is None:
+            return None
+        eff = self._policy_temp_c(snap)
+        if eff == snap.temperature_c:
+            return snap
+        src = snap.temp_source
+        if eff > snap.temperature_c:
+            src = f"{src}+hidiff"
+        return replace(snap, temperature_c=eff, temp_source=src)
+
     def _gpu_temp_abort_check(self) -> bool:
         snap = self.gpu.snapshot()
         if snap is None:
             return False
-        return snap.temperature_c >= self.settings.max_gpu_temp_c
+        return self._policy_temp_c(snap) >= self.settings.max_gpu_temp_c
 
     def _gpu_paused_for_cooldown(self) -> bool:
         return self.is_gpu and time.time() < self._cooldown_until
@@ -1089,7 +1125,7 @@ class Supervisor:
         self._log("info", f"QUEUED {kind} ({reason}) — will retry when {retry_when}")
 
     def _apply_gpu_safety(self, snap) -> bool:
-        action = self.guard.evaluate(snap)
+        action = self.guard.evaluate(self._policy_snap(snap))
         if action.level == "warn":
             now = time.time()
             if (
@@ -1097,6 +1133,8 @@ class Supervisor:
                 or now - self._last_gpu_warn_at >= 60.0
             ):
                 self._log("warn", action.message)
+                if snap is not None and hasattr(snap, "temp_summary"):
+                    self._log("info", f"Temp sensors: {snap.temp_summary()}")
                 self._ui_event("WARN", "GPU", action.message[:40])
                 self._last_gpu_warn_code = action.code
                 self._last_gpu_warn_at = now
@@ -1297,8 +1335,12 @@ class Supervisor:
                     last_net_check = now
 
                 if now - last_power_tune >= self.settings.sample_interval_s:
+                    policy_snap = self._policy_snap(snap)
+                    policy_temp = (
+                        policy_snap.temperature_c if policy_snap is not None else 0
+                    )
                     if self._power_booster is not None:
-                        self._power_booster.adjust(snap)
+                        self._power_booster.adjust(policy_snap)
                     if (
                         self.is_cuda_native
                         and snap is not None
@@ -1306,27 +1348,28 @@ class Supervisor:
                     ):
                         old_scale = getattr(self.backend, "thermal_batch_scale", 1.0)
                         new_scale = self.backend.update_thermal_batch_from_temp(
-                            snap.temperature_c
+                            policy_temp
                         )
                         if abs(new_scale - old_scale) >= 0.005:
+                            sensor = snap.temp_summary() if hasattr(snap, "temp_summary") else f"{snap.temperature_c}C"
                             self._log(
                                 "info",
                                 f"Thermal batch scale {old_scale:.2f} -> {new_scale:.2f} "
-                                f"(temp {snap.temperature_c}C, batch="
+                                f"(policy_temp {policy_temp}C, {sensor}, batch="
                                 f"{getattr(self.backend, 'batch_size', 0)})",
                             )
                         if hasattr(self.backend, "update_thermal_lanes_from_temp"):
                             old_lanes = int(getattr(self.backend, "active_lanes", 1))
                             new_lanes, lane_changed = (
                                 self.backend.update_thermal_lanes_from_temp(
-                                    snap.temperature_c
+                                    policy_temp
                                 )
                             )
                             if lane_changed and new_lanes != old_lanes:
                                 self._log(
                                     "info",
                                     f"Thermal lanes {old_lanes} -> {new_lanes} "
-                                    f"(temp {snap.temperature_c}C, "
+                                    f"(policy_temp {policy_temp}C, "
                                     f"batch={getattr(self.backend, 'batch_size', 0)})",
                                 )
                                 if self.dashboard:
@@ -1334,7 +1377,7 @@ class Supervisor:
                                         "INFO",
                                         "GPU",
                                         f"thermal lanes {old_lanes}->{new_lanes} "
-                                        f"@ {snap.temperature_c}C",
+                                        f"@ pol {policy_temp}C",
                                     )
                         if self.dashboard and hasattr(self.backend, "batch_size"):
                             self.dashboard.set_cuda_batch(

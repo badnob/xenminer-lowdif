@@ -36,11 +36,31 @@ class GpuSnapshot:
     free_mib: int
     util_pct: int
     power_w: float
+    # Control temperature used by guards/derate — hottest of available sensors.
     temperature_c: int
+    # Optional discrete sensors (0 = unavailable). Die can look cool while board/hotspot cook.
+    gpu_temp_c: int = 0
+    board_temp_c: int = 0
+    hotspot_temp_c: int = 0
+    memory_temp_c: int = 0
+    temp_source: str = "gpu"
 
     @property
     def headroom_mib(self) -> int:
         return self.total_mib - self.used_mib
+
+    def temp_summary(self) -> str:
+        """Short multi-sensor string for logs/dashboard."""
+        parts = [f"ctrl {self.temperature_c}C({self.temp_source})"]
+        if self.gpu_temp_c > 0:
+            parts.append(f"die {self.gpu_temp_c}C")
+        if self.board_temp_c > 0:
+            parts.append(f"board {self.board_temp_c}C")
+        if self.hotspot_temp_c > 0:
+            parts.append(f"hotspot {self.hotspot_temp_c}C")
+        if self.memory_temp_c > 0:
+            parts.append(f"mem {self.memory_temp_c}C")
+        return " · ".join(parts)
 
 
 @dataclass
