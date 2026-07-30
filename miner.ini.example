@@ -110,13 +110,17 @@ enabled = false
 dll_path = native/build/bin/xen_cuda.dll
 batch_size = 0
 max_batch_size = 0
-# Dense low-dif harvest: pack many parallel key-prefix lanes up to VRAM cap
-max_lanes = 12
+# Dense low-dif harvest: pack key-prefix lanes up to VRAM cap
+# Daily-driver 5090 (also display GPU): 4 is a good start; try 6–8 if cool/smooth
+max_lanes = 4
 lane_reserve = 1
 # fill = pack as many lanes as VRAM allows (min_batch_per_lane each)
 # boost = legacy reference_difficulty // difficulty only
 lane_pack_mode = fill
 # Keep each lane useful; lower → more lanes at dif 100 (try 1024–4096)
 min_batch_per_lane = 2048
+# Windows: loading lane1.dll.. copies of xen_cuda.dll often hits Access Denied.
+# false = sequential multi-prefix on one DLL (safe). true = try parallel copies.
+allow_dll_lane_copies = false
 # 0 = use efficiency.runtime_overhead_pct of GPU total
 runtime_overhead_mib = 0

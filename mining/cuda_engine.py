@@ -73,21 +73,69 @@ class CudaBatchResult:
 
 
 class CudaEngine:
+    # Keep DLL search dirs alive for the process (Windows).
+    _dll_dirs: list[object] = []
+
     def __init__(self, dll_path: Path | None = None) -> None:
         path = resolve_cuda_lib_path(dll_path) if dll_path else resolve_cuda_lib_path()
         if not path.exists():
             raise FileNotFoundError(
                 f"Native CUDA library not found at {path}. {build_hint()}"
             )
+        path = path.resolve()
         # Linux often needs RTLD_GLOBAL so CUDA runtime symbols resolve.
         if sys.platform == "win32":
-            self._lib = ctypes.CDLL(str(path))
+            self._lib = self._load_windows_dll(path)
         else:
             mode = getattr(ctypes, "RTLD_GLOBAL", 0)
             self._lib = ctypes.CDLL(str(path), mode=mode) if mode else ctypes.CDLL(str(path))
         self._lib_path = path
         self._parallel_lanes = False
         self._bind()
+
+    @classmethod
+    def _load_windows_dll(cls, path: Path) -> ctypes.CDLL:
+        """
+        Load a CUDA engine DLL on Windows.
+
+        Multi-lane fallback copies live under data/cuda_lane_workers/; without
+        add_dll_directory, dependent CUDA runtime DLLs often fail with
+        WinError 5 (Access is denied) or missing-dependency errors.
+        """
+        import os
+
+        search_dirs = [path.parent]
+        # Also search the primary build bin (where cudart etc. often sit).
+        try:
+            primary = resolve_cuda_lib_path().resolve().parent
+            if primary not in search_dirs:
+                search_dirs.append(primary)
+        except OSError:
+            pass
+
+        for directory in search_dirs:
+            try:
+                if hasattr(os, "add_dll_directory"):
+                    handle = os.add_dll_directory(str(directory))
+                    cls._dll_dirs.append(handle)
+            except (OSError, FileNotFoundError, AttributeError):
+                continue
+
+        # Prefer WinDLL after add_dll_directory (Python 3.8+).
+        try:
+            return ctypes.WinDLL(str(path))  # type: ignore[attr-defined]
+        except OSError as exc:
+            last_err = exc
+        try:
+            return ctypes.CDLL(str(path))
+        except OSError as exc:
+            last_err = exc
+        raise OSError(
+            f"Failed to load CUDA library '{path}': {last_err}. "
+            f"If this is a lane copy (laneN.dll), Windows often blocks multi-DLL "
+            f"CUDA loads — rebuild with native multi-lane (xen_cuda_set_lane_count) "
+            f"or set allow_dll_lane_copies=false for sequential multi-prefix."
+        ) from last_err
 
     def _bind(self) -> None:
         lib = self._lib

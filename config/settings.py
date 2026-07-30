@@ -93,6 +93,9 @@ class Settings:
     cuda_lane_pack_mode: str
     # Each lane keeps at least this many attempts when packing (fill mode).
     cuda_min_batch_per_lane: int
+    # Windows: extra laneN.dll copies for parallel fallback. If false (or load
+    # fails), multi-lane uses sequential key prefixes on one engine.
+    cuda_allow_dll_lane_copies: bool
     # Live shrink multi-lane harvest as temp approaches warn/max.
     gpu_thermal_lane_enabled: bool
     gpu_thermal_lane_min: int
@@ -281,7 +284,7 @@ def load_settings(ini_path: Path | None = None) -> Settings:
                 mine.get("memory_cost", "1100"),
             )
         ),
-        cuda_max_lanes=int(cuda.get("max_lanes", "12")),
+        cuda_max_lanes=int(cuda.get("max_lanes", "4")),
         cuda_lane_reserve=int(cuda.get("lane_reserve", "1")),
         cuda_lane_pack_mode=str(
             cuda.get("lane_pack_mode", eff.get("lane_pack_mode", "fill"))
@@ -295,5 +298,13 @@ def load_settings(ini_path: Path | None = None) -> Settings:
                 eff.get("min_batch_per_lane", "2048"),
             )
         ),
+        # Default false: DLL copies often hit WinError 5 on Windows.
+        # Native multi-lane DLL still parallelises; sequential prefixes otherwise.
+        cuda_allow_dll_lane_copies=str(
+            cuda.get("allow_dll_lane_copies", "false")
+        )
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
         submit_cpu_fraction=float(que.get("submit_cpu_fraction", "0.30")),
     )

@@ -271,11 +271,23 @@ class CudaNativeBackend(MinerBackend):
         return self._lane_workers_dir / lane_lib_name(lane)
 
     def _ensure_lane_dll(self, lane: int) -> Path:
-        src = Path(self.settings.cuda_dll_path)
+        src = Path(self.settings.cuda_dll_path).resolve()
         dst = self._lane_dll_path(lane)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
-            shutil.copy2(src, dst)
+        need_copy = (not dst.exists()) or (
+            dst.stat().st_mtime < src.stat().st_mtime
+            or dst.stat().st_size != src.stat().st_size
+        )
+        if need_copy:
+            # Write to a temp name then replace — avoids partial/locked files on Windows.
+            tmp = dst.with_suffix(dst.suffix + ".tmp")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            shutil.copy2(src, tmp)
+            tmp.replace(dst)
         return dst
 
     def _worker_reserve_bytes(self) -> int:
@@ -308,16 +320,57 @@ class CudaNativeBackend(MinerBackend):
             self._lane_engines[lane] = engine
         self._parallel_mode = "dll-copies"
 
+    def _use_sequential_multi_prefix(self, reason: str) -> None:
+        """
+        Multi-lane key prefixes on the single primary engine (no extra DLL loads).
+
+        Still covers more key space than 1 lane; not concurrent on GPU unless the
+        native DLL supports xen_cuda_set_lane_count.
+        """
+        self._teardown_lane_copies()
+        self._parallel_mode = "sequential"
+        # Best-effort log via session path sibling
+        try:
+            from efficiency.cuda_lane_policy import append_lane_event
+
+            append_lane_event(
+                self._temp_lane_log_path,
+                f"MULTI-LANE FALLBACK sequential prefixes lanes={self._lanes} | {reason}",
+            )
+        except OSError:
+            pass
+
     def _sync_lane_engines(self) -> None:
         if not self._started:
             return
         if self._engine.parallel_lanes_supported:
             self._teardown_lane_copies()
             self._parallel_mode = "native" if self._lanes > 1 else "sequential"
-            self._engine.set_lane_count(self._lanes)
+            try:
+                self._engine.set_lane_count(self._lanes)
+            except RuntimeError:
+                # Native multi-lane rejected — sequential prefixes on one engine.
+                self._use_sequential_multi_prefix(
+                    "xen_cuda_set_lane_count failed; sequential multi-prefix"
+                )
             return
         if self._lanes > 1:
-            self._sync_lane_copy_workers()
+            # Optional: skip DLL copies entirely on Windows daily-driver (safer).
+            allow_copies = bool(
+                getattr(self.settings, "cuda_allow_dll_lane_copies", True)
+            )
+            if not allow_copies:
+                self._use_sequential_multi_prefix(
+                    "cuda_allow_dll_lane_copies=false"
+                )
+                return
+            try:
+                self._sync_lane_copy_workers()
+            except (OSError, PermissionError, RuntimeError) as exc:
+                # WinError 5 Access Denied is common loading laneN.dll + CUDA.
+                self._use_sequential_multi_prefix(
+                    f"dll-copy workers failed ({exc}); sequential multi-prefix"
+                )
             return
         self._teardown_lane_copies()
         self._parallel_mode = "sequential"
@@ -325,7 +378,11 @@ class CudaNativeBackend(MinerBackend):
     def _engine_for_lane(self, lane: int) -> CudaEngine:
         if lane == 0 or self._engine.parallel_lanes_supported:
             return self._engine
-        return self._lane_engines[lane]
+        eng = self._lane_engines.get(lane)
+        if eng is not None:
+            return eng
+        # Sequential multi-prefix: one engine, different key_prefix per lane.
+        return self._engine
 
     def _verify_batch_fits_budget(self, plan: CudaVramPlan, difficulty: int) -> None:
         per_lane_budget = max(1, plan.budget_bytes // max(1, plan.lanes))
