@@ -115,6 +115,9 @@ class ThermalPolicyTests(unittest.TestCase):
         from efficiency.thermal_policy import (
             effective_control_temp_c,
             high_diff_temp_tighten_c,
+            vram_pressure_lane_cap,
+            vram_pressure_scale,
+            combine_batch_scales,
         )
 
         # Below 1.5× ref → no tighten
@@ -138,6 +141,36 @@ class ThermalPolicyTests(unittest.TestCase):
             ),
             80,
         )
+
+    def test_vram_pressure_keeps_mining_scale(self) -> None:
+        from efficiency.thermal_policy import (
+            combine_batch_scales,
+            vram_pressure_lane_cap,
+            vram_pressure_scale,
+        )
+
+        self.assertEqual(vram_pressure_scale(20000, 24576, 30000), 1.0)
+        mid = vram_pressure_scale(27000, 24576, 30000, min_scale=0.55)
+        self.assertGreater(mid, 0.55)
+        self.assertLess(mid, 1.0)
+        self.assertEqual(
+            vram_pressure_scale(30000, 24576, 30000, min_scale=0.55),
+            0.55,
+        )
+        # Soft floor still mining — scale never 0
+        self.assertGreaterEqual(
+            vram_pressure_scale(40000, 24576, 30000, min_scale=0.55),
+            0.55,
+        )
+        self.assertEqual(
+            vram_pressure_lane_cap(4, 20000, 24576, 30000),
+            4,
+        )
+        self.assertLessEqual(
+            vram_pressure_lane_cap(4, 28000, 24576, 30000),
+            4,
+        )
+        self.assertEqual(combine_batch_scales(1.0, 0.7, 0.9), 0.7)
 
 
 if __name__ == "__main__":

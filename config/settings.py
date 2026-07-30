@@ -43,6 +43,10 @@ class Settings:
     vram_account_desktop: bool
     # Extra MiB pad on top of runtime overhead (fragmentation / estimate error).
     vram_safety_margin_mib: int
+    # Live soft reel-in when used > target (keep mining; shrink batch/lanes).
+    vram_soft_derate_enabled: bool
+    vram_soft_min_scale: float
+    vram_soft_lane_enabled: bool
     max_gpu_temp_c: int
     warn_gpu_temp_c: int
     # Board / PCB (often hotter than die under Argon2). Separate from die caps.
@@ -204,6 +208,15 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         .lower()
         in ("1", "true", "yes", "on"),
         vram_safety_margin_mib=int(eff.get("vram_safety_margin_mib", "512")),
+        vram_soft_derate_enabled=str(eff.get("vram_soft_derate_enabled", "true"))
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
+        vram_soft_min_scale=float(eff.get("vram_soft_min_scale", "0.55")),
+        vram_soft_lane_enabled=str(eff.get("vram_soft_lane_enabled", "true"))
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
         max_gpu_temp_c=int(eff.get("max_gpu_temp_c", "84")),
         warn_gpu_temp_c=int(eff.get("warn_gpu_temp_c", "78")),
         # Board: Tony measured ~88C sustained; hard cap 90 with warn before that.

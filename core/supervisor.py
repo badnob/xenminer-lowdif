@@ -1443,6 +1443,37 @@ class Supervisor:
                                         "GPU",
                                         f"thermal lanes {old_lanes}->{new_lanes}",
                                     )
+                        # Soft VRAM reel-in: shrink work if over target, keep mining.
+                        if (
+                            hasattr(self.backend, "update_vram_pressure_from_used")
+                            and self.vram_caps is not None
+                        ):
+                            old_b = getattr(self.backend, "batch_size", 0)
+                            old_l = int(getattr(self.backend, "active_lanes", 1))
+                            vscale, lanes_now, vchanged = (
+                                self.backend.update_vram_pressure_from_used(
+                                    snap.used_mib,
+                                    target_mib=self.vram_caps.target_mib,
+                                    emergency_mib=self.vram_caps.emergency_mib,
+                                )
+                            )
+                            if vchanged:
+                                self._log(
+                                    "info",
+                                    f"VRAM soft derate scale={vscale:.2f} "
+                                    f"used={snap.used_mib}MiB "
+                                    f"target={self.vram_caps.target_mib}MiB "
+                                    f"lanes={old_l}->{lanes_now} "
+                                    f"batch={old_b}->{getattr(self.backend, 'batch_size', 0)} "
+                                    f"(still mining)",
+                                )
+                                if self.dashboard:
+                                    self._ui_event(
+                                        "INFO",
+                                        "VRAM",
+                                        f"soft derate {vscale:.2f} "
+                                        f"@ {snap.used_mib}MiB",
+                                    )
                         if self.dashboard and hasattr(self.backend, "batch_size"):
                             self.dashboard.set_cuda_batch(
                                 self.backend.batch_size,

@@ -117,6 +117,75 @@ def apply_batch_scale(batch_size: int, scale: float) -> int:
     return max(1, int(batch_size * s))
 
 
+def vram_pressure_scale(
+    used_mib: int,
+    target_mib: int,
+    emergency_mib: int,
+    *,
+    min_scale: float = 0.55,
+    start_slack_mib: int = 0,
+) -> float:
+    """
+    Soft VRAM reel-in — keep mining, shrink work as used rises past target.
+
+    - used <= target + start_slack → 1.0 (full planned batch)
+    - used >= emergency → min_scale (still hashing; hard stop is separate)
+    - linear between those points
+
+    Does NOT pause or stop. Emergency VRAM stop remains VramGuard's job.
+    """
+    floor = clamp_float(float(min_scale), 0.50, 1.0)
+    used = max(0, int(used_mib))
+    target = max(1, int(target_mib))
+    emerg = max(target + 1, int(emergency_mib))
+    start = target + max(0, int(start_slack_mib))
+
+    if used <= start:
+        return 1.0
+    if used >= emerg:
+        return floor
+    span = emerg - start
+    if span <= 0:
+        return floor
+    t = (used - start) / span
+    return clamp_float(1.0 - t * (1.0 - floor), floor, 1.0)
+
+
+def vram_pressure_lane_cap(
+    planned_lanes: int,
+    used_mib: int,
+    target_mib: int,
+    emergency_mib: int,
+    *,
+    min_lanes: int = 1,
+) -> int:
+    """
+    Soft lane shrink under VRAM pressure (still mining).
+
+    Full lanes at/under target; step down toward min_lanes as used approaches
+    emergency. Prefer trimming lanes before starving batch to zero.
+    """
+    planned = max(1, int(planned_lanes))
+    floor = clamp_int(int(min_lanes), 1, planned)
+    if planned <= floor:
+        return planned
+    scale = vram_pressure_scale(used_mib, target_mib, emergency_mib, min_scale=0.50)
+    if scale >= 0.999:
+        return planned
+    # Map scale 1→planned, 0.5→floor
+    t = clamp_float((1.0 - scale) / 0.50, 0.0, 1.0)
+    raw = planned - t * (planned - floor)
+    return clamp_int(int(round(raw)), floor, planned)
+
+
+def combine_batch_scales(*scales: float, floor: float = 0.50) -> float:
+    """Most aggressive (lowest) of thermal / VRAM / other soft scales."""
+    lo = clamp_float(float(floor), 0.50, 1.0)
+    if not scales:
+        return 1.0
+    return clamp_float(min(float(s) for s in scales), lo, 1.0)
+
+
 def thermal_lane_cap(
     planned_lanes: int,
     temperature_c: int,

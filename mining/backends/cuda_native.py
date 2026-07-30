@@ -22,9 +22,12 @@ from efficiency.vram_policy import VramCaps, resolve_vram_caps
 from efficiency.thermal_policy import (
     apply_batch_scale,
     clamp_float,
+    combine_batch_scales,
     difficulty_lane_bias,
     thermal_batch_scale,
     thermal_lane_cap,
+    vram_pressure_lane_cap,
+    vram_pressure_scale,
 )
 from mining.native_lib import lane_lib_name
 from mining.vram_batch import (
@@ -72,14 +75,17 @@ class CudaNativeBackend(MinerBackend):
         # Soft thermal derate on planned batch (1.0 = full plan). Stays in
         # [gpu_thermal_batch_min_scale, 1.0] when enabled via settings.
         self._thermal_batch_scale = 1.0
+        self._vram_batch_scale = 1.0
         self._planned_batch_per_lane = settings.cuda_batch_size
         # Last full VRAM plan before thermal/difficulty lane caps.
         self._base_vram_plan: CudaVramPlan | None = None
         self._thermal_lane_cap: int | None = None
+        self._vram_lane_cap: int | None = None
         self._last_temp_c = 0
         # Desktop / other apps VRAM (display GPU). Captured cold, refreshed on replan.
         self._desktop_baseline_mib = 0
         self._foreign_vram_mib = 0
+        self._last_vram_used_mib = 0
 
     def set_vram_caps(self, caps: VramCaps | None) -> None:
         self._vram_caps = caps
@@ -181,7 +187,7 @@ class CudaNativeBackend(MinerBackend):
         return plan
 
     def _effective_plan(self, base: CudaVramPlan) -> CudaVramPlan:
-        """Apply difficulty bias + live thermal lane cap on top of VRAM pack."""
+        """Apply difficulty bias + live thermal/VRAM lane caps on top of pack."""
         plan = base
         if self.settings.gpu_difficulty_lane_bias and plan.lanes > 1:
             biased = difficulty_lane_bias(
@@ -193,9 +199,25 @@ class CudaNativeBackend(MinerBackend):
             if biased < plan.lanes:
                 plan = apply_lane_cap(plan, biased)
 
-        if self._thermal_lane_cap is not None and self._thermal_lane_cap < plan.lanes:
-            plan = apply_lane_cap(plan, self._thermal_lane_cap)
+        lane_caps = [
+            c
+            for c in (self._thermal_lane_cap, self._vram_lane_cap)
+            if c is not None and c < plan.lanes
+        ]
+        if lane_caps:
+            plan = apply_lane_cap(plan, min(lane_caps))
         return plan
+
+    def _combined_batch_scale(self) -> float:
+        floor = clamp_float(self.settings.gpu_thermal_batch_min_scale, 0.50, 1.0)
+        vram_floor = clamp_float(
+            float(getattr(self.settings, "vram_soft_min_scale", 0.55)), 0.50, 1.0
+        )
+        return combine_batch_scales(
+            self._thermal_batch_scale,
+            self._vram_batch_scale,
+            floor=min(floor, vram_floor),
+        )
 
     def _apply_plan(self, plan: CudaVramPlan, *, base: CudaVramPlan | None = None) -> None:
         if base is not None:
@@ -206,33 +228,30 @@ class CudaNativeBackend(MinerBackend):
         self._lanes = plan.lanes
         self._planned_batch_per_lane = plan.batch_per_lane
         self._batch_per_lane = apply_batch_scale(
-            plan.batch_per_lane, self._thermal_batch_scale
+            plan.batch_per_lane, self._combined_batch_scale()
         )
         self._batch_size = self._batch_per_lane
 
     def _reapply_live_caps(self) -> bool:
         """
-        Re-derive active lanes/batch from base plan + thermal/difficulty caps.
+        Re-derive active lanes/batch from base plan + thermal/VRAM caps.
 
-        Returns True when lane count changed (caller may want to log / dashboard).
+        Returns True when lane count or batch changed.
         """
         base = self._base_vram_plan
         if base is None:
             return False
         before = self._lanes
+        before_batch = self._batch_per_lane
         plan = self._effective_plan(base)
         self._apply_plan(plan, base=base)
         if plan.lanes != before:
             self._sync_lane_engines()
             return True
-        return False
+        return before_batch != self._batch_per_lane
 
     def set_thermal_batch_scale(self, scale: float) -> float:
-        """
-        Soft-limit batch size for heat (within configured min..1.0).
-
-        Re-applies against the last VRAM plan so live mining picks it up.
-        """
+        """Soft-limit batch for heat; combined with VRAM scale. Mining continues."""
         floor = clamp_float(self.settings.gpu_thermal_batch_min_scale, 0.50, 1.0)
         new_scale = clamp_float(float(scale), floor, 1.0)
         if abs(new_scale - self._thermal_batch_scale) < 0.005:
@@ -240,10 +259,82 @@ class CudaNativeBackend(MinerBackend):
         self._thermal_batch_scale = new_scale
         if self._planned_batch_per_lane > 0:
             self._batch_per_lane = apply_batch_scale(
-                self._planned_batch_per_lane, self._thermal_batch_scale
+                self._planned_batch_per_lane, self._combined_batch_scale()
             )
             self._batch_size = self._batch_per_lane
         return self._thermal_batch_scale
+
+    def set_vram_batch_scale(self, scale: float) -> float:
+        """Soft-limit batch for VRAM pressure — never stops mining."""
+        floor = clamp_float(
+            float(getattr(self.settings, "vram_soft_min_scale", 0.55)), 0.50, 1.0
+        )
+        new_scale = clamp_float(float(scale), floor, 1.0)
+        if abs(new_scale - self._vram_batch_scale) < 0.005:
+            return self._vram_batch_scale
+        self._vram_batch_scale = new_scale
+        if self._planned_batch_per_lane > 0:
+            self._batch_per_lane = apply_batch_scale(
+                self._planned_batch_per_lane, self._combined_batch_scale()
+            )
+            self._batch_size = self._batch_per_lane
+        return self._vram_batch_scale
+
+    def update_vram_pressure_from_used(
+        self,
+        used_mib: int,
+        *,
+        target_mib: int,
+        emergency_mib: int,
+    ) -> tuple[float, int, bool]:
+        """
+        Live soft reel-in when NVML used exceeds target.
+
+        Shrinks batch and optionally lanes; keeps hashing. Returns
+        (vram_batch_scale, active_lanes, changed).
+        """
+        self._last_vram_used_mib = int(used_mib)
+        if not bool(getattr(self.settings, "vram_soft_derate_enabled", True)):
+            old = self._vram_batch_scale
+            self.set_vram_batch_scale(1.0)
+            self._vram_lane_cap = None
+            changed = self._reapply_live_caps() or abs(old - 1.0) >= 0.005
+            return self._vram_batch_scale, self._lanes, changed
+
+        min_scale = float(getattr(self.settings, "vram_soft_min_scale", 0.55))
+        scale = vram_pressure_scale(
+            used_mib,
+            target_mib,
+            emergency_mib,
+            min_scale=min_scale,
+        )
+        old_scale = self._vram_batch_scale
+        self.set_vram_batch_scale(scale)
+
+        base = self._base_vram_plan
+        planned = base.lanes if base is not None else self._lanes
+        if self.settings.gpu_difficulty_lane_bias and base is not None and planned > 1:
+            planned = difficulty_lane_bias(
+                planned,
+                base.difficulty,
+                self.settings.vram_reference_difficulty,
+                full_pack_ratio=self.settings.gpu_difficulty_lane_full_pack_ratio,
+            )
+        if bool(getattr(self.settings, "vram_soft_lane_enabled", True)) and planned > 1:
+            self._vram_lane_cap = vram_pressure_lane_cap(
+                planned,
+                used_mib,
+                target_mib,
+                emergency_mib,
+                min_lanes=max(1, int(self.settings.gpu_thermal_lane_min)),
+            )
+        else:
+            self._vram_lane_cap = None
+
+        changed = self._reapply_live_caps()
+        if abs(scale - old_scale) >= 0.005:
+            changed = True
+        return self._vram_batch_scale, self._lanes, changed
 
     def update_thermal_batch_from_temp(self, temperature_c: int) -> float:
         """Compute and apply thermal batch scale from live GPU temp."""

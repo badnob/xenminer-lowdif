@@ -41,6 +41,10 @@ min_headroom_mib = 0
 vram_account_desktop = true
 # Extra pad for allocator fragmentation / estimate error
 vram_safety_margin_mib = 512
+# Soft reel-in when used creeps above target — keep mining, shrink batch/lanes
+vram_soft_derate_enabled = true
+vram_soft_min_scale = 0.55
+vram_soft_lane_enabled = true
 # Die (GPU) temps — tighter than board
 max_gpu_temp_c = 84
 warn_gpu_temp_c = 78
