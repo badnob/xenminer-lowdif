@@ -53,12 +53,17 @@ max_board_temp_c = 90
 warn_board_temp_c = 85
 gpu_cooldown_s = 60
 gpu_power_boost_enabled = true
-# Power target band: eases toward min as difficulty rises above reference
+# Power: max clocks at low dif (100), slope toward min as dif + board heat rise
 gpu_power_target_pct = 100
 gpu_power_min_pct = 65
 gpu_difficulty_power_enabled = true
-# Hit min power sooner on rising difficulty (was 2.0×)
-gpu_difficulty_power_full_ratio = 1.5
+gpu_difficulty_power_full_ratio = 1.9
+# Clock curve — leave VRAM headroom at dif 100 so SM clocks can climb
+clock_curve_enabled = true
+clock_low_difficulty = 100
+clock_batch_fill_low = 0.72
+clock_batch_fill_ref = 0.95
+clock_batch_fill_high = 0.85
 # Soft-shrink CUDA batch as temp nears warn/max (never below min scale)
 gpu_thermal_batch_enabled = true
 gpu_thermal_batch_min_scale = 0.60

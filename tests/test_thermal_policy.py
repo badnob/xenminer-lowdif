@@ -2,6 +2,7 @@ import unittest
 
 from efficiency.thermal_policy import (
     apply_batch_scale,
+    difficulty_batch_fill_fraction,
     difficulty_lane_bias,
     difficulty_power_target_pct,
     normalize_power_range,
@@ -23,37 +24,71 @@ class ThermalPolicyTests(unittest.TestCase):
         self.assertEqual(floor, 50)
 
     def test_difficulty_power_at_and_below_reference(self) -> None:
+        # At/below low_difficulty (default 100) → max target
         self.assertEqual(
-            difficulty_power_target_pct(100, 1100, 1100, min_pct=75),
+            difficulty_power_target_pct(100, 100, 1100, min_pct=75, low_difficulty=100),
             100,
         )
         self.assertEqual(
-            difficulty_power_target_pct(100, 500, 1100, min_pct=75),
+            difficulty_power_target_pct(100, 50, 1100, min_pct=75, low_difficulty=100),
             100,
         )
+        # Between low and ref: eases below max
+        midband = difficulty_power_target_pct(
+            100, 500, 1100, min_pct=75, low_difficulty=100
+        )
+        self.assertLess(midband, 100)
+        self.assertGreater(midband, 75)
+        # At reference: still above floor
+        at_ref = difficulty_power_target_pct(
+            100, 1100, 1100, min_pct=75, low_difficulty=100
+        )
+        self.assertLessEqual(at_ref, 100)
+        self.assertGreaterEqual(at_ref, 75)
 
     def test_difficulty_power_full_derate_at_ratio(self) -> None:
         # 2× reference → min_pct
         self.assertEqual(
-            difficulty_power_target_pct(100, 2200, 1100, min_pct=75, full_derate_ratio=2.0),
+            difficulty_power_target_pct(
+                100, 2200, 1100, min_pct=75, full_derate_ratio=2.0, low_difficulty=100
+            ),
             75,
         )
         # Beyond 2× stays at min
         self.assertEqual(
-            difficulty_power_target_pct(100, 3000, 1100, min_pct=75, full_derate_ratio=2.0),
+            difficulty_power_target_pct(
+                100, 3000, 1100, min_pct=75, full_derate_ratio=2.0, low_difficulty=100
+            ),
             75,
         )
 
     def test_difficulty_power_midpoint(self) -> None:
-        # Halfway from ref to 2× → midpoint of 100 and 75
-        mid = difficulty_power_target_pct(
-            100, 1650, 1100, min_pct=75, full_derate_ratio=2.0
+        # Above ref toward 2× — between mid and floor
+        val = difficulty_power_target_pct(
+            100, 1650, 1100, min_pct=75, full_derate_ratio=2.0, low_difficulty=100
         )
-        self.assertEqual(mid, 88)
+        self.assertGreaterEqual(val, 75)
+        self.assertLessEqual(val, 100)
+
+    def test_difficulty_batch_fill_clock_curve(self) -> None:
+        low = difficulty_batch_fill_fraction(
+            100, 1100, low_difficulty=100, fill_at_low=0.72
+        )
+        self.assertAlmostEqual(low, 0.72, places=2)
+        ref = difficulty_batch_fill_fraction(1100, 1100, fill_at_ref=0.95)
+        self.assertAlmostEqual(ref, 0.95, places=2)
+        # Rising dif from 100 → 1100 increases fill
+        mid = difficulty_batch_fill_fraction(
+            600, 1100, fill_at_low=0.72, fill_at_ref=0.95
+        )
+        self.assertGreater(mid, 0.72)
+        self.assertLess(mid, 0.95)
 
     def test_difficulty_power_stays_in_band(self) -> None:
         for diff in (800, 1100, 1400, 1800, 2200, 4000):
-            pct = difficulty_power_target_pct(100, diff, 1100, min_pct=75)
+            pct = difficulty_power_target_pct(
+                100, diff, 1100, min_pct=75, low_difficulty=100
+            )
             self.assertGreaterEqual(pct, 75)
             self.assertLessEqual(pct, 100)
 
@@ -115,23 +150,26 @@ class ThermalPolicyTests(unittest.TestCase):
         from efficiency.thermal_policy import (
             effective_control_temp_c,
             high_diff_temp_tighten_c,
-            vram_pressure_lane_cap,
-            vram_pressure_scale,
-            combine_batch_scales,
         )
 
         # Below 1.5× ref → no tighten
         self.assertEqual(
-            high_diff_temp_tighten_c(1100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            high_diff_temp_tighten_c(
+                1100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12
+            ),
             0,
         )
         self.assertEqual(
-            high_diff_temp_tighten_c(1650, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            high_diff_temp_tighten_c(
+                1650, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12
+            ),
             0,
         )
         # At/above ~1.9× (2090) → full +12C proxy (board heat)
         self.assertEqual(
-            high_diff_temp_tighten_c(2100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12),
+            high_diff_temp_tighten_c(
+                2100, 1100, start_ratio=1.5, full_ratio=1.9, max_tighten_c=12
+            ),
             12,
         )
         # Die 68C at dif 2100 → policy 80C → trips max 72

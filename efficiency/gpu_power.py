@@ -41,6 +41,7 @@ class GpuPowerBooster:
         difficulty_power_enabled: bool = True,
         reference_difficulty: int = 1100,
         full_derate_ratio: float = 2.0,
+        low_difficulty: int = 100,
     ) -> None:
         self._monitor = monitor
         target, floor = normalize_power_range(target_pct, min_pct)
@@ -54,6 +55,7 @@ class GpuPowerBooster:
         self._difficulty_power_enabled = difficulty_power_enabled
         self._reference_difficulty = max(1, int(reference_difficulty))
         self._full_derate_ratio = max(1.01, float(full_derate_ratio))
+        self._low_difficulty = max(1, int(low_difficulty))
         self._difficulty = self._reference_difficulty
         self._effective_target_pct = target
         self._original_limit_mw: int | None = None
@@ -76,6 +78,7 @@ class GpuPowerBooster:
             self._reference_difficulty,
             min_pct=self._min_pct,
             full_derate_ratio=self._full_derate_ratio,
+            low_difficulty=self._low_difficulty,
         )
 
     def set_difficulty(self, difficulty: int) -> int:
@@ -224,7 +227,11 @@ class GpuPowerBooster:
         floor_mw = max(self._min_limit_mw, min(floor_mw, target_mw, self._max_limit_mw))
         step_mw = max(5_000, (self._max_limit_mw - self._min_limit_mw) // 20)
 
-        temp = snap.temperature_c
+        temp = int(snap.temperature_c or 0)
+        # Prefer board when hotter (Argon2 often heats PCB more than die).
+        board = int(getattr(snap, "board_temp_c", 0) or 0)
+        die = int(getattr(snap, "gpu_temp_c", 0) or 0)
+        temp = max(temp, board, die)
         new_mw = self._current_limit_mw
 
         if temp >= self._warn_temp_c - 2:

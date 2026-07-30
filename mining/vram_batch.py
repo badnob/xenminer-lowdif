@@ -20,6 +20,13 @@ DEFAULT_MIN_BATCH_PER_LANE = 2048
 DEFAULT_ABSOLUTE_MAX_LANES = 32
 
 
+def clamp_fill_fraction(value: float) -> float:
+    try:
+        return max(0.40, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 @dataclass(frozen=True)
 class CudaVramPlan:
     """Batch choice tied to configured VRAM limits."""
@@ -491,6 +498,7 @@ def plan_cuda_batch(
     foreign_used_mib: int = 0,
     safety_margin_mib: int = 0,
     concurrent_vram_lanes: int | None = None,
+    budget_fill_fraction: float = 1.0,
 ) -> CudaVramPlan:
     """
     Size CUDA batch/lanes from miner.ini VRAM caps.
@@ -513,6 +521,10 @@ def plan_cuda_batch(
         foreign_used_mib=foreign,
         safety_margin_mib=margin,
     )
+    # Clock curve: use only a fraction of the VRAM batch budget at low dif.
+    fill = clamp_fill_fraction(budget_fill_fraction)
+    if fill < 0.999:
+        budget_bytes = max(1, int(budget_bytes * fill))
     budget_mib = budget_bytes // (1024 * 1024)
 
     seq_mode = concurrent_vram_lanes is not None and int(concurrent_vram_lanes) <= 1

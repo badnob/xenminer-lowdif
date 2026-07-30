@@ -44,32 +44,91 @@ def difficulty_power_target_pct(
     *,
     min_pct: int = 75,
     full_derate_ratio: float = 2.0,
+    low_difficulty: int = 100,
 ) -> int:
     """
-    Ease GPU power target as difficulty rises above the reference.
+    Difficulty-aware power for max clocks at low dif, ease-off as dif rises.
 
-    - difficulty <= reference → base_target_pct
-    - difficulty >= reference * full_derate_ratio → min_pct
-    - linear in between
+    - difficulty <= low_difficulty → base_target_pct (max clocks / power)
+    - low_difficulty → reference → ease toward ~mid of [min, base]
+    - reference → reference * full_derate_ratio → min_pct
+    - linear within each segment
 
-    Result is always within [min_pct, base_target_pct] after normalization
-    to the absolute 50–100 band.
+    Result always within [min_pct, base_target_pct] (50–100 absolute band).
     """
     target, floor = normalize_power_range(base_target_pct, min_pct)
     if difficulty <= 0 or reference_difficulty <= 0:
         return target
-    if difficulty <= reference_difficulty:
+
+    low = max(1, int(low_difficulty))
+    ref = max(low, int(reference_difficulty))
+    dif = max(1, int(difficulty))
+
+    if dif <= low:
         return target
 
     ratio = full_derate_ratio if full_derate_ratio > 1.0 else 2.0
-    span = reference_difficulty * (ratio - 1.0)
-    if span <= 0:
-        return target
+    high = max(ref + 1, int(round(ref * ratio)))
+    # Mid power at reference: halfway from target to floor (still strong).
+    mid = clamp_int(int(round(target - 0.35 * (target - floor))), floor, target)
 
-    over = difficulty - reference_difficulty
-    t = clamp_float(over / span, 0.0, 1.0)
-    eased = target - t * (target - floor)
+    if dif <= ref:
+        span = ref - low
+        t = clamp_float((dif - low) / span, 0.0, 1.0) if span > 0 else 1.0
+        eased = target - t * (target - mid)
+        return clamp_int(int(round(eased)), floor, target)
+
+    # Above reference → slope to floor by high
+    span = high - ref
+    t = clamp_float((dif - ref) / span, 0.0, 1.0) if span > 0 else 1.0
+    eased = mid - t * (mid - floor)
     return clamp_int(int(round(eased)), floor, target)
+
+
+def difficulty_batch_fill_fraction(
+    difficulty: int,
+    reference_difficulty: int,
+    *,
+    low_difficulty: int = 100,
+    fill_at_low: float = 0.72,
+    fill_at_ref: float = 0.95,
+    fill_at_high: float = 0.85,
+    full_derate_ratio: float = 1.9,
+) -> float:
+    """
+    VRAM batch fill fraction vs difficulty (clock curve).
+
+    Low dif Argon2 is less memory-hard per attempt — packing the entire VRAM
+    cap can pin the card in a memory/power limited state and hold clocks down.
+    Leaving fill headroom at dif~100 often raises SM clocks and real H/s.
+
+    - <= low_difficulty → fill_at_low (clock headroom)
+    - → reference → fill_at_ref (dense harvest)
+    - → high (ref * ratio) → fill_at_high (ease memory pressure + heat)
+    """
+    low_f = clamp_float(float(fill_at_low), 0.40, 1.0)
+    ref_f = clamp_float(float(fill_at_ref), 0.40, 1.0)
+    high_f = clamp_float(float(fill_at_high), 0.40, 1.0)
+
+    if difficulty <= 0 or reference_difficulty <= 0:
+        return ref_f
+
+    low = max(1, int(low_difficulty))
+    ref = max(low, int(reference_difficulty))
+    dif = max(1, int(difficulty))
+    ratio = full_derate_ratio if full_derate_ratio > 1.0 else 1.9
+    high = max(ref + 1, int(round(ref * ratio)))
+
+    if dif <= low:
+        return low_f
+    if dif <= ref:
+        span = ref - low
+        t = clamp_float((dif - low) / span, 0.0, 1.0) if span > 0 else 1.0
+        return clamp_float(low_f + t * (ref_f - low_f), 0.40, 1.0)
+
+    span = high - ref
+    t = clamp_float((dif - ref) / span, 0.0, 1.0) if span > 0 else 1.0
+    return clamp_float(ref_f + t * (high_f - ref_f), 0.40, 1.0)
 
 
 def thermal_batch_scale(

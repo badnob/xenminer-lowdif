@@ -24,6 +24,7 @@ from efficiency.thermal_policy import (
     apply_batch_scale,
     clamp_float,
     combine_batch_scales,
+    difficulty_batch_fill_fraction,
     difficulty_lane_bias,
     thermal_batch_scale,
     thermal_lane_cap,
@@ -181,6 +182,19 @@ class CudaNativeBackend(MinerBackend):
         # Sequential multi-prefix: only one batch buffer resident → fill VRAM
         # with full per-lane batch. Parallel native/DLL: VRAM = lanes × batch.
         concurrent = self._concurrent_vram_lanes_hint()
+        fill_frac = 1.0
+        if bool(getattr(self.settings, "clock_curve_enabled", True)):
+            fill_frac = difficulty_batch_fill_fraction(
+                diff,
+                self.settings.vram_reference_difficulty,
+                low_difficulty=int(getattr(self.settings, "clock_low_difficulty", 100)),
+                fill_at_low=float(getattr(self.settings, "clock_batch_fill_low", 0.72)),
+                fill_at_ref=float(getattr(self.settings, "clock_batch_fill_ref", 0.95)),
+                fill_at_high=float(getattr(self.settings, "clock_batch_fill_high", 0.85)),
+                full_derate_ratio=float(
+                    getattr(self.settings, "gpu_high_diff_temp_full_ratio", 1.9)
+                ),
+            )
 
         plan = plan_cuda_batch(
             int(info.total_vram_bytes),
@@ -199,6 +213,7 @@ class CudaNativeBackend(MinerBackend):
             foreign_used_mib=foreign,
             safety_margin_mib=safety if account else 0,
             concurrent_vram_lanes=concurrent,
+            budget_fill_fraction=fill_frac,
         )
         if plan.batch_per_lane <= 0:
             raise RuntimeError(
@@ -216,6 +231,7 @@ class CudaNativeBackend(MinerBackend):
         if (
             diff < self.settings.vram_reference_difficulty
             and not plan.fills_budget(tolerance_mib=64)
+            and not bool(getattr(self.settings, "clock_curve_enabled", True))
         ):
             # Soft: integer packing can leave a thin gap; only hard-fail on large shortfalls.
             short = plan.budget_mib - plan.batch_vram_mib

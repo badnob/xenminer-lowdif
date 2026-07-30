@@ -159,14 +159,16 @@ class Supervisor:
             self._power_booster = GpuPowerBooster(
                 self.gpu,
                 target_pct=settings.gpu_power_target_pct,
-                warn_temp_c=settings.warn_gpu_temp_c,
-                max_temp_c=settings.max_gpu_temp_c,
+                # Board is often hotter under Argon2 — use board warn/max for power steps.
+                warn_temp_c=max(settings.warn_gpu_temp_c, settings.warn_board_temp_c),
+                max_temp_c=max(settings.max_gpu_temp_c, settings.max_board_temp_c),
                 logger=self.logger if not use_dashboard else None,
                 windows_performance_mode=settings.gpu_windows_performance_mode,
                 min_pct=settings.gpu_power_min_pct,
                 difficulty_power_enabled=settings.gpu_difficulty_power_enabled,
                 reference_difficulty=settings.vram_reference_difficulty,
                 full_derate_ratio=settings.gpu_difficulty_power_full_ratio,
+                low_difficulty=int(getattr(settings, "clock_low_difficulty", 100)),
             )
         self._cooldown_until = 0.0
         self._last_gpu_warn_at = 0.0

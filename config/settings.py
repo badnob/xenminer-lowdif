@@ -61,6 +61,12 @@ class Settings:
     gpu_difficulty_power_enabled: bool
     # Difficulty multiple of reference where power hits min_pct (e.g. 2.0 = 2×).
     gpu_difficulty_power_full_ratio: float
+    # Clock curve: max clocks at low dif, slope batch fill + power as dif rises.
+    clock_curve_enabled: bool
+    clock_low_difficulty: int
+    clock_batch_fill_low: float
+    clock_batch_fill_ref: float
+    clock_batch_fill_high: float
     # Soft-shrink CUDA batch as temp approaches warn/max (scale ≥ min).
     gpu_thermal_batch_enabled: bool
     gpu_thermal_batch_min_scale: float
@@ -227,13 +233,21 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         gpu_cooldown_s=int(eff.get("gpu_cooldown_s", "45")),
         gpu_power_boost_enabled=eff.getboolean("gpu_power_boost_enabled", fallback=True),
         gpu_power_target_pct=int(eff.get("gpu_power_target_pct", "100")),
-        gpu_power_min_pct=int(eff.get("gpu_power_min_pct", "75")),
+        gpu_power_min_pct=int(eff.get("gpu_power_min_pct", "65")),
         gpu_difficulty_power_enabled=eff.getboolean(
             "gpu_difficulty_power_enabled", fallback=True
         ),
         gpu_difficulty_power_full_ratio=float(
-            eff.get("gpu_difficulty_power_full_ratio", "2.0")
+            eff.get("gpu_difficulty_power_full_ratio", "1.9")
         ),
+        clock_curve_enabled=str(eff.get("clock_curve_enabled", "true"))
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
+        clock_low_difficulty=int(eff.get("clock_low_difficulty", "100")),
+        clock_batch_fill_low=float(eff.get("clock_batch_fill_low", "0.72")),
+        clock_batch_fill_ref=float(eff.get("clock_batch_fill_ref", "0.95")),
+        clock_batch_fill_high=float(eff.get("clock_batch_fill_high", "0.85")),
         gpu_thermal_batch_enabled=eff.getboolean(
             "gpu_thermal_batch_enabled", fallback=True
         ),
