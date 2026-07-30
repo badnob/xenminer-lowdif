@@ -2,9 +2,11 @@ import unittest
 
 from efficiency.thermal_policy import (
     apply_batch_scale,
+    difficulty_lane_bias,
     difficulty_power_target_pct,
     normalize_power_range,
     thermal_batch_scale,
+    thermal_lane_cap,
 )
 
 
@@ -78,6 +80,36 @@ class ThermalPolicyTests(unittest.TestCase):
         self.assertEqual(apply_batch_scale(1000, 0.70), 700)
         self.assertEqual(apply_batch_scale(1, 0.70), 1)
         self.assertEqual(apply_batch_scale(0, 0.70), 0)
+
+    def test_thermal_lane_cap_cool_keeps_all(self) -> None:
+        self.assertEqual(thermal_lane_cap(12, 55, 68, 72), 12)
+        self.assertEqual(thermal_lane_cap(12, 60, 68, 72), 12)
+
+    def test_thermal_lane_cap_at_max_is_min(self) -> None:
+        self.assertEqual(thermal_lane_cap(12, 72, 68, 72, min_lanes=1), 1)
+        self.assertEqual(thermal_lane_cap(12, 80, 68, 72, min_lanes=2), 2)
+
+    def test_thermal_lane_cap_shrinks_near_warn(self) -> None:
+        cool = thermal_lane_cap(12, 60, 68, 72)
+        warm = thermal_lane_cap(12, 67, 68, 72)
+        hot = thermal_lane_cap(12, 70, 68, 72)
+        self.assertEqual(cool, 12)
+        self.assertLessEqual(warm, cool)
+        self.assertLessEqual(hot, warm)
+        self.assertGreaterEqual(hot, 1)
+
+    def test_difficulty_lane_bias_full_pack_at_low_dif(self) -> None:
+        self.assertEqual(
+            difficulty_lane_bias(12, 100, 1100, full_pack_ratio=0.35),
+            12,
+        )
+
+    def test_difficulty_lane_bias_collapses_near_reference(self) -> None:
+        mid = difficulty_lane_bias(12, 700, 1100, full_pack_ratio=0.35)
+        near = difficulty_lane_bias(12, 1000, 1100, full_pack_ratio=0.35)
+        self.assertLess(mid, 12)
+        self.assertLessEqual(near, mid)
+        self.assertEqual(difficulty_lane_bias(12, 1100, 1100), 1)
 
 
 if __name__ == "__main__":

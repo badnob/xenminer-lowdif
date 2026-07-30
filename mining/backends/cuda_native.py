@@ -19,11 +19,18 @@ from efficiency.cuda_lane_policy import (
     save_lane_policy,
 )
 from efficiency.vram_policy import VramCaps, resolve_vram_caps
-from efficiency.thermal_policy import apply_batch_scale, clamp_float, thermal_batch_scale
+from efficiency.thermal_policy import (
+    apply_batch_scale,
+    clamp_float,
+    difficulty_lane_bias,
+    thermal_batch_scale,
+    thermal_lane_cap,
+)
 from mining.native_lib import lane_lib_name
 from mining.vram_batch import (
     CUDA_ENGINE_RESERVE_BYTES,
     CudaVramPlan,
+    apply_lane_cap,
     memory_limited_batch_size,
     plan_cuda_batch,
 )
@@ -65,6 +72,10 @@ class CudaNativeBackend(MinerBackend):
         # [gpu_thermal_batch_min_scale, 1.0] when enabled via settings.
         self._thermal_batch_scale = 1.0
         self._planned_batch_per_lane = settings.cuda_batch_size
+        # Last full VRAM plan before thermal/difficulty lane caps.
+        self._base_vram_plan: CudaVramPlan | None = None
+        self._thermal_lane_cap: int | None = None
+        self._last_temp_c = 0
 
     def set_vram_caps(self, caps: VramCaps | None) -> None:
         self._vram_caps = caps
@@ -108,6 +119,8 @@ class CudaNativeBackend(MinerBackend):
             explicit_batch=explicit,
             explicit_max_batch=self.settings.cuda_max_batch_size,
             runtime_overhead_mib=caps.runtime_overhead_mib,
+            min_batch_per_lane=self.settings.cuda_min_batch_per_lane,
+            pack_mode=self.settings.cuda_lane_pack_mode,
         )
         if plan.batch_per_lane <= 0:
             raise RuntimeError(
@@ -123,14 +136,38 @@ class CudaNativeBackend(MinerBackend):
             )
         if (
             diff < self.settings.vram_reference_difficulty
-            and not plan.fills_budget()
+            and not plan.fills_budget(tolerance_mib=64)
         ):
-            raise RuntimeError(
-                f"CUDA harvest plan under-filled VRAM cap: {plan.summary()}"
-            )
+            # Soft: integer packing can leave a thin gap; only hard-fail on large shortfalls.
+            short = plan.budget_mib - plan.batch_vram_mib
+            if short > max(64, plan.budget_mib // 20):
+                raise RuntimeError(
+                    f"CUDA harvest plan under-filled VRAM cap: {plan.summary()}"
+                )
         return plan
 
-    def _apply_plan(self, plan: CudaVramPlan) -> None:
+    def _effective_plan(self, base: CudaVramPlan) -> CudaVramPlan:
+        """Apply difficulty bias + live thermal lane cap on top of VRAM pack."""
+        plan = base
+        if self.settings.gpu_difficulty_lane_bias and plan.lanes > 1:
+            biased = difficulty_lane_bias(
+                plan.lanes,
+                plan.difficulty,
+                self.settings.vram_reference_difficulty,
+                full_pack_ratio=self.settings.gpu_difficulty_lane_full_pack_ratio,
+            )
+            if biased < plan.lanes:
+                plan = apply_lane_cap(plan, biased)
+
+        if self._thermal_lane_cap is not None and self._thermal_lane_cap < plan.lanes:
+            plan = apply_lane_cap(plan, self._thermal_lane_cap)
+        return plan
+
+    def _apply_plan(self, plan: CudaVramPlan, *, base: CudaVramPlan | None = None) -> None:
+        if base is not None:
+            self._base_vram_plan = base
+        elif self._base_vram_plan is None:
+            self._base_vram_plan = plan
         self._vram_plan = plan
         self._lanes = plan.lanes
         self._planned_batch_per_lane = plan.batch_per_lane
@@ -138,6 +175,23 @@ class CudaNativeBackend(MinerBackend):
             plan.batch_per_lane, self._thermal_batch_scale
         )
         self._batch_size = self._batch_per_lane
+
+    def _reapply_live_caps(self) -> bool:
+        """
+        Re-derive active lanes/batch from base plan + thermal/difficulty caps.
+
+        Returns True when lane count changed (caller may want to log / dashboard).
+        """
+        base = self._base_vram_plan
+        if base is None:
+            return False
+        before = self._lanes
+        plan = self._effective_plan(base)
+        self._apply_plan(plan, base=base)
+        if plan.lanes != before:
+            self._sync_lane_engines()
+            return True
+        return False
 
     def set_thermal_batch_scale(self, scale: float) -> float:
         """
@@ -159,6 +213,7 @@ class CudaNativeBackend(MinerBackend):
 
     def update_thermal_batch_from_temp(self, temperature_c: int) -> float:
         """Compute and apply thermal batch scale from live GPU temp."""
+        self._last_temp_c = int(temperature_c)
         if not self.settings.gpu_thermal_batch_enabled:
             return self.set_thermal_batch_scale(1.0)
         scale = thermal_batch_scale(
@@ -169,9 +224,48 @@ class CudaNativeBackend(MinerBackend):
         )
         return self.set_thermal_batch_scale(scale)
 
+    def update_thermal_lanes_from_temp(self, temperature_c: int) -> tuple[int, bool]:
+        """
+        Live multi-lane shrink as the board warms.
+
+        Returns (active_lanes, changed).
+        """
+        self._last_temp_c = int(temperature_c)
+        base = self._base_vram_plan
+        if base is None or not self.settings.gpu_thermal_lane_enabled:
+            return self._lanes, False
+
+        # Difficulty bias first so thermal cap is relative to safe planned lanes.
+        planned = base.lanes
+        if self.settings.gpu_difficulty_lane_bias and planned > 1:
+            planned = difficulty_lane_bias(
+                planned,
+                base.difficulty,
+                self.settings.vram_reference_difficulty,
+                full_pack_ratio=self.settings.gpu_difficulty_lane_full_pack_ratio,
+            )
+
+        cap = thermal_lane_cap(
+            planned,
+            temperature_c,
+            self.settings.warn_gpu_temp_c,
+            self.settings.max_gpu_temp_c,
+            min_lanes=max(1, int(self.settings.gpu_thermal_lane_min)),
+        )
+        prev = self._thermal_lane_cap
+        self._thermal_lane_cap = cap
+        changed = self._reapply_live_caps()
+        if prev != cap:
+            changed = True
+        return self._lanes, changed
+
     @property
     def thermal_batch_scale(self) -> float:
         return self._thermal_batch_scale
+
+    @property
+    def thermal_lane_cap_live(self) -> int | None:
+        return self._thermal_lane_cap
 
     def _lane_dll_path(self, lane: int) -> Path:
         return self._lane_workers_dir / lane_lib_name(lane)
@@ -251,9 +345,10 @@ class CudaNativeBackend(MinerBackend):
         reserve = self.settings.headroom_mib * 1024 * 1024
         self._engine.init(device_id=0, reserve_bytes=reserve)
         info = self._engine.device_info(0)
-        plan = self._plan_from_device(info)
-        self._verify_batch_fits_budget(plan, self._difficulty)
-        self._apply_plan(plan)
+        base = self._plan_from_device(info)
+        self._verify_batch_fits_budget(base, self._difficulty)
+        plan = self._effective_plan(base)
+        self._apply_plan(plan, base=base)
         self._started = True
         self._sync_lane_engines()
 
@@ -263,6 +358,8 @@ class CudaNativeBackend(MinerBackend):
             self._engine.shutdown()
             self._started = False
             self._vram_plan = None
+            self._base_vram_plan = None
+            self._thermal_lane_cap = None
             self._parallel_mode = "sequential"
 
     def set_lanes(self, lanes: int) -> None:
@@ -322,9 +419,11 @@ class CudaNativeBackend(MinerBackend):
             return
         self._difficulty = difficulty
         info = self._engine.device_info(0)
-        plan = self._plan_from_device(info, difficulty=difficulty)
-        self._verify_batch_fits_budget(plan, difficulty)
-        self._apply_plan(plan)
+        base = self._plan_from_device(info, difficulty=difficulty)
+        self._verify_batch_fits_budget(base, difficulty)
+        # Fresh difficulty plan; keep thermal lane cap if still warm.
+        plan = self._effective_plan(base)
+        self._apply_plan(plan, base=base)
         self._sync_lane_engines()
 
     def _run_lane(self, lane: int) -> CudaBatchResult:

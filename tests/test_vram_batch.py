@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from mining.vram_batch import (
     CUDA_ENGINE_RESERVE_BYTES,
+    apply_lane_cap,
     clamp_plan_to_caps,
     cuda_lane_count,
     plan_cuda_batch,
@@ -15,6 +16,7 @@ from mining.vram_batch import (
 
 REF = 1100
 MAX_LANES = 4
+MAX_LANES_DENSE = 12
 
 
 class VramBatchTests(unittest.TestCase):
@@ -95,6 +97,7 @@ class VramBatchTests(unittest.TestCase):
             reference_difficulty=REF,
             max_lanes=MAX_LANES,
             runtime_overhead_mib=2048,
+            pack_mode="boost",
         )
         plan_1100 = plan_cuda_batch(
             total,
@@ -122,13 +125,60 @@ class VramBatchTests(unittest.TestCase):
             1,
         )
         self.assertEqual(
-            cuda_lane_count(100, reference_difficulty=REF, max_lanes=MAX_LANES),
+            cuda_lane_count(
+                100, reference_difficulty=REF, max_lanes=MAX_LANES, pack_mode="boost"
+            ),
             4,
         )
         self.assertEqual(
-            cuda_lane_count(550, reference_difficulty=REF, max_lanes=MAX_LANES),
+            cuda_lane_count(
+                550, reference_difficulty=REF, max_lanes=MAX_LANES, pack_mode="boost"
+            ),
             2,
         )
+
+    def test_fill_mode_packs_more_lanes_at_low_difficulty(self) -> None:
+        total = 32607 * 1024 * 1024
+        free = (32607 - 2864) * 1024 * 1024
+        plan = plan_cuda_batch(
+            total,
+            free,
+            target_mib=22528,
+            desktop_headroom_mib=8192,
+            difficulty=100,
+            reference_difficulty=REF,
+            max_lanes=MAX_LANES_DENSE,
+            runtime_overhead_mib=2048,
+            min_batch_per_lane=2048,
+            pack_mode="fill",
+        )
+        # boost would only give 11; fill packs more up to max_lanes while
+        # keeping min_batch_per_lane.
+        self.assertGreaterEqual(plan.lanes, 8)
+        self.assertLessEqual(plan.lanes, MAX_LANES_DENSE)
+        self.assertGreaterEqual(plan.batch_per_lane, 2048)
+        self.assertTrue(plan.within_limits())
+        self.assertTrue(plan.fills_budget())
+
+    def test_apply_lane_cap_redistributes_batch(self) -> None:
+        total = 32607 * 1024 * 1024
+        free = (32607 - 2864) * 1024 * 1024
+        plan = plan_cuda_batch(
+            total,
+            free,
+            target_mib=22528,
+            desktop_headroom_mib=8192,
+            difficulty=100,
+            reference_difficulty=REF,
+            max_lanes=MAX_LANES_DENSE,
+            runtime_overhead_mib=2048,
+            pack_mode="fill",
+        )
+        self.assertGreater(plan.lanes, 2)
+        reduced = apply_lane_cap(plan, 2)
+        self.assertEqual(reduced.lanes, 2)
+        self.assertTrue(reduced.within_limits())
+        self.assertGreaterEqual(reduced.batch_per_lane, plan.batch_per_lane)
 
     def test_harvest_plan_fills_budget_within_caps(self) -> None:
         total = 32607 * 1024 * 1024
@@ -142,6 +192,7 @@ class VramBatchTests(unittest.TestCase):
             reference_difficulty=REF,
             max_lanes=MAX_LANES,
             runtime_overhead_mib=2048,
+            pack_mode="boost",
         )
         self.assertTrue(plan.within_limits())
         self.assertTrue(plan.fills_budget())

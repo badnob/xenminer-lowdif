@@ -1,7 +1,11 @@
-"""Difficulty-aware power and thermal batch derate — pure policy helpers.
+"""Difficulty-aware power and thermal batch/lane derate — pure policy helpers.
 
 Keeps automatic heat combat within configured ranges so high difficulty
 and warm GPUs ease load without collapsing hashrate or power.
+
+Low-difficulty multi-lane harvest runs cool and fast; when difficulty (and
+board heat) climb, we soft-scale batch first, then shrink live lane count
+before the hard temp stop.
 """
 
 from __future__ import annotations
@@ -111,3 +115,87 @@ def apply_batch_scale(batch_size: int, scale: float) -> int:
         return 0
     s = clamp_float(float(scale), 0.50, 1.0)
     return max(1, int(batch_size * s))
+
+
+def thermal_lane_cap(
+    planned_lanes: int,
+    temperature_c: int,
+    warn_temp_c: int,
+    max_temp_c: int,
+    *,
+    min_lanes: int = 1,
+    cool_margin_c: int = 8,
+    start_derate_margin_c: int = 3,
+) -> int:
+    """
+    Live max lanes under heat — shrink multi-lane harvest before hard stop.
+
+    - temp <= warn - cool_margin → full planned_lanes
+    - temp >= warn - start_derate_margin → begin stepping down
+    - temp >= max → min_lanes
+    - linear step count between start and max
+
+    Used so difficulty spikes that heat the board drop lanes *immediately*
+    instead of waiting for a full cooldown restart.
+    """
+    planned = max(1, int(planned_lanes))
+    floor = clamp_int(int(min_lanes), 1, planned)
+    if planned <= floor:
+        return planned
+    if temperature_c <= 0:
+        return planned
+
+    warn = int(warn_temp_c)
+    hard = max(warn + 1, int(max_temp_c))
+    cool_start = warn - max(0, int(cool_margin_c))
+    # Begin shrinking a few degrees before warn so we don't ride the edge.
+    derate_start = warn - max(0, int(start_derate_margin_c))
+    derate_start = max(cool_start, derate_start)
+
+    if temperature_c <= derate_start:
+        return planned
+    if temperature_c >= hard:
+        return floor
+
+    span = hard - derate_start
+    if span <= 0:
+        return floor
+    t = clamp_float((temperature_c - derate_start) / span, 0.0, 1.0)
+    # Continuous shrink, then ceil-ish via round so we step cleanly.
+    raw = planned - t * (planned - floor)
+    return clamp_int(int(round(raw)), floor, planned)
+
+
+def difficulty_lane_bias(
+    planned_lanes: int,
+    difficulty: int,
+    reference_difficulty: int,
+    *,
+    # Below this fraction of reference, keep full pack.
+    full_pack_ratio: float = 0.35,
+    # At/above reference → 1 lane (caller already does this via plan).
+) -> int:
+    """
+    Extra safety: as difficulty climbs toward reference, bias lanes down
+    even if VRAM could still pack more. Reduces heat before reference.
+
+    - difficulty <= ref * full_pack_ratio → full planned
+    - difficulty >= ref → 1
+    - linear in between
+    """
+    planned = max(1, int(planned_lanes))
+    if planned <= 1 or reference_difficulty <= 0 or difficulty <= 0:
+        return planned
+    if difficulty >= reference_difficulty:
+        return 1
+
+    full_at = max(1, int(reference_difficulty * max(0.05, min(0.95, full_pack_ratio))))
+    if difficulty <= full_at:
+        return planned
+
+    span = reference_difficulty - full_at
+    if span <= 0:
+        return 1
+    t = clamp_float((difficulty - full_at) / span, 0.0, 1.0)
+    raw = planned - t * (planned - 1)
+    return clamp_int(int(round(raw)), 1, planned)

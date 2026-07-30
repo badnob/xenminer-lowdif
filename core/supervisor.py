@@ -1315,11 +1315,32 @@ class Supervisor:
                                 f"(temp {snap.temperature_c}C, batch="
                                 f"{getattr(self.backend, 'batch_size', 0)})",
                             )
-                            if self.dashboard and hasattr(self.backend, "batch_size"):
-                                self.dashboard.set_cuda_batch(
-                                    self.backend.batch_size,
-                                    getattr(self.backend, "active_lanes", 1),
+                        if hasattr(self.backend, "update_thermal_lanes_from_temp"):
+                            old_lanes = int(getattr(self.backend, "active_lanes", 1))
+                            new_lanes, lane_changed = (
+                                self.backend.update_thermal_lanes_from_temp(
+                                    snap.temperature_c
                                 )
+                            )
+                            if lane_changed and new_lanes != old_lanes:
+                                self._log(
+                                    "info",
+                                    f"Thermal lanes {old_lanes} -> {new_lanes} "
+                                    f"(temp {snap.temperature_c}C, "
+                                    f"batch={getattr(self.backend, 'batch_size', 0)})",
+                                )
+                                if self.dashboard:
+                                    self._ui_event(
+                                        "INFO",
+                                        "GPU",
+                                        f"thermal lanes {old_lanes}->{new_lanes} "
+                                        f"@ {snap.temperature_c}C",
+                                    )
+                        if self.dashboard and hasattr(self.backend, "batch_size"):
+                            self.dashboard.set_cuda_batch(
+                                self.backend.batch_size,
+                                getattr(self.backend, "active_lanes", 1),
+                            )
                     last_power_tune = now
 
                 if self.is_gpu:

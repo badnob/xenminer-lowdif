@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -105,54 +105,6 @@ def record_temp_lane_reduction(
         ),
     )
     return state
-
-
-def restore_lane_cap_if_cool(
-    policy_path: Path,
-    log_path: Path,
-    state: CudaLanePolicyState,
-    *,
-    temperature_c: int,
-    warn_temp_c: int,
-    difficulty: int,
-    reference_difficulty: int,
-) -> tuple[CudaLanePolicyState, bool]:
-    """
-    Restore the configured lane ceiling after reference difficulty when the GPU
-    has cooled, so the next low-difficulty harvest can push all lanes again.
-    """
-    if difficulty < reference_difficulty:
-        return state, False
-    if temperature_c >= warn_temp_c - 5:
-        return state, False
-    if state.effective_max_lanes >= state.config_max_lanes:
-        return state, False
-
-    before = state.effective_max_lanes
-    state.effective_max_lanes = state.config_max_lanes
-    event = {
-        "at": _utc_now(),
-        "temperature_c": temperature_c,
-        "difficulty": difficulty,
-        "lanes_cap_before": before,
-        "lanes_cap_after": state.config_max_lanes,
-        "reason": "reference_difficulty_cool_restore",
-        "note": (
-            "GPU cooled at reference difficulty — lane cap restored for the "
-            "next low-difficulty harvest push."
-        ),
-    }
-    state.events.append(event)
-    save_lane_policy(policy_path, state)
-    append_lane_event(
-        log_path,
-        (
-            f"LANE CAP RESTORE difficulty={difficulty} temp={temperature_c}C "
-            f"cap {before}->{state.config_max_lanes} "
-            f"| ready for next harvest push"
-        ),
-    )
-    return state, True
 
 
 def restore_lane_cap_if_cool(

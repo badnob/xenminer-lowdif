@@ -89,6 +89,16 @@ class Settings:
     vram_reference_difficulty: int
     cuda_max_lanes: int
     cuda_lane_reserve: int
+    # Low-dif harvest packing: fill = pack lanes to VRAM; boost = legacy ref//diff.
+    cuda_lane_pack_mode: str
+    # Each lane keeps at least this many attempts when packing (fill mode).
+    cuda_min_batch_per_lane: int
+    # Live shrink multi-lane harvest as temp approaches warn/max.
+    gpu_thermal_lane_enabled: bool
+    gpu_thermal_lane_min: int
+    # As difficulty climbs toward reference, bias lanes down before VRAM forces it.
+    gpu_difficulty_lane_bias: bool
+    gpu_difficulty_lane_full_pack_ratio: float
     submit_cpu_fraction: float
 
     @property
@@ -191,6 +201,16 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         gpu_thermal_batch_min_scale=float(
             eff.get("gpu_thermal_batch_min_scale", "0.70")
         ),
+        gpu_thermal_lane_enabled=eff.getboolean(
+            "gpu_thermal_lane_enabled", fallback=True
+        ),
+        gpu_thermal_lane_min=int(eff.get("gpu_thermal_lane_min", "1")),
+        gpu_difficulty_lane_bias=eff.getboolean(
+            "gpu_difficulty_lane_bias", fallback=True
+        ),
+        gpu_difficulty_lane_full_pack_ratio=float(
+            eff.get("gpu_difficulty_lane_full_pack_ratio", "0.35")
+        ),
         gpu_windows_performance_mode=eff.getboolean(
             "gpu_windows_performance_mode", fallback=True
         ),
@@ -244,7 +264,19 @@ def load_settings(ini_path: Path | None = None) -> Settings:
                 mine.get("memory_cost", "1100"),
             )
         ),
-        cuda_max_lanes=int(cuda.get("max_lanes", "4")),
+        cuda_max_lanes=int(cuda.get("max_lanes", "12")),
         cuda_lane_reserve=int(cuda.get("lane_reserve", "1")),
+        cuda_lane_pack_mode=str(
+            cuda.get("lane_pack_mode", eff.get("lane_pack_mode", "fill"))
+        )
+        .strip()
+        .lower()
+        or "fill",
+        cuda_min_batch_per_lane=int(
+            cuda.get(
+                "min_batch_per_lane",
+                eff.get("min_batch_per_lane", "2048"),
+            )
+        ),
         submit_cpu_fraction=float(que.get("submit_cpu_fraction", "0.30")),
     )

@@ -23,31 +23,39 @@ hash_len = 64
 
 [efficiency]
 # VRAM safety as % of EACH GPU's total (auto-scales for all card sizes)
-target_vram_pct = 69.09
-desktop_headroom_pct = 25.12
+# ~24 GiB used on a 32 GiB 5090 FE ≈ 73.5% — override with target_vram_mib if preferred
+target_vram_pct = 73.50
+desktop_headroom_pct = 22.00
 emergency_vram_pct = 92.78
 min_headroom_pct = 3.68
 runtime_overhead_pct = 6.28
 min_headroom_floor_mib = 512
 runtime_overhead_floor_mib = 256
-# Absolute MiB overrides (0 = use percentages only)
-target_vram_mib = 0
+# Absolute MiB overrides (0 = use percentages only). 24576 ≈ 24 GiB cap on 32 GiB FE.
+target_vram_mib = 24576
 headroom_mib = 0
 emergency_vram_mib = 0
 min_headroom_mib = 0
-max_gpu_temp_c = 75
-warn_gpu_temp_c = 72
+# Tighter board safety for difficulty spikes (was 72/75)
+max_gpu_temp_c = 72
+warn_gpu_temp_c = 68
 gpu_cooldown_s = 60
 gpu_power_boost_enabled = true
 # Power target band: eases toward min as difficulty rises above reference
 gpu_power_target_pct = 100
-gpu_power_min_pct = 75
+gpu_power_min_pct = 65
 gpu_difficulty_power_enabled = true
-# At 2× reference difficulty, power target is at gpu_power_min_pct
-gpu_difficulty_power_full_ratio = 2.0
+# Hit min power sooner on rising difficulty (was 2.0×)
+gpu_difficulty_power_full_ratio = 1.5
 # Soft-shrink CUDA batch as temp nears warn/max (never below min scale)
 gpu_thermal_batch_enabled = true
-gpu_thermal_batch_min_scale = 0.70
+gpu_thermal_batch_min_scale = 0.60
+# Live multi-lane shrink when the board warms (before hard stop)
+gpu_thermal_lane_enabled = true
+gpu_thermal_lane_min = 1
+# As difficulty climbs toward reference, bias lanes down early
+gpu_difficulty_lane_bias = true
+gpu_difficulty_lane_full_pack_ratio = 0.35
 gpu_windows_performance_mode = true
 cpu_lanes = 2
 lane_ramp_step = 1
@@ -96,7 +104,13 @@ enabled = false
 dll_path = native/build/bin/xen_cuda.dll
 batch_size = 0
 max_batch_size = 0
-max_lanes = 4
+# Dense low-dif harvest: pack many parallel key-prefix lanes up to VRAM cap
+max_lanes = 12
 lane_reserve = 1
+# fill = pack as many lanes as VRAM allows (min_batch_per_lane each)
+# boost = legacy reference_difficulty // difficulty only
+lane_pack_mode = fill
+# Keep each lane useful; lower → more lanes at dif 100 (try 1024–4096)
+min_batch_per_lane = 2048
 # 0 = use efficiency.runtime_overhead_pct of GPU total
 runtime_overhead_mib = 0
