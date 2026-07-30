@@ -313,7 +313,7 @@ def load_settings(ini_path: Path | None = None) -> Settings:
                 mine.get("memory_cost", "1100"),
             )
         ),
-        cuda_max_lanes=int(cuda.get("max_lanes", "4")),
+        cuda_max_lanes=int(cuda.get("max_lanes", "8")),
         cuda_lane_reserve=int(cuda.get("lane_reserve", "1")),
         cuda_lane_pack_mode=str(
             cuda.get("lane_pack_mode", eff.get("lane_pack_mode", "fill"))

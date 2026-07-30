@@ -43,6 +43,8 @@ class CudaVramPlan:
     difficulty: int
     # Non-miner VRAM (Windows desktop / other apps) baked into projected_used.
     foreign_used_mib: int = 0
+    # How many lane batches reside in VRAM at once (1 = sequential multi-prefix).
+    concurrent_vram_lanes: int = 0
 
     def summary(self) -> str:
         lane_part = (
@@ -60,16 +62,27 @@ class CudaVramPlan:
             if self.foreign_used_mib > 0
             else ""
         )
+        conc = self.effective_concurrent_vram_lanes()
+        mode = (
+            f" vram_mode=sequential"
+            if self.lanes > 1 and conc <= 1
+            else (f" vram_mode=parallel×{conc}" if self.lanes > 1 else "")
+        )
         return (
             f"{lane_part}{reserve} "
             f"budget={self.budget_mib:,}MiB "
             f"batch_vram≈{self.batch_vram_mib:,}MiB "
             f"cuda_overhead={self.runtime_overhead_mib:,}MiB "
-            f"{foreign} "
+            f"{foreign}{mode} "
             f"projected_used={self.projected_used_mib:,}MiB "
             f"projected_free={self.projected_headroom_mib:,}MiB "
             f"(target≤{self.target_mib:,}MiB desktop≥{self.desktop_headroom_mib:,}MiB free)"
         )
+
+    def effective_concurrent_vram_lanes(self) -> int:
+        if self.concurrent_vram_lanes > 0:
+            return max(1, min(int(self.concurrent_vram_lanes), max(1, self.lanes)))
+        return max(1, self.lanes)
 
     def within_limits(self) -> bool:
         return (
@@ -286,8 +299,18 @@ def _plan_projection(
     difficulty: int,
     runtime_overhead_mib: int,
     foreign_used_mib: int = 0,
+    concurrent_vram_lanes: int | None = None,
 ) -> tuple[int, int, int, int]:
-    batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * lanes
+    """
+    concurrent_vram_lanes: how many lane batches sit in GPU memory at once.
+    Sequential multi-prefix = 1. Parallel native/DLL copies = lanes.
+    """
+    logical = max(1, int(lanes))
+    if concurrent_vram_lanes is None or int(concurrent_vram_lanes) <= 0:
+        vram_lanes = logical
+    else:
+        vram_lanes = max(1, min(int(concurrent_vram_lanes), logical))
+    batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * vram_lanes
     batch_vram_mib = batch_vram_bytes // (1024 * 1024)
     projected_used_mib = (
         max(0, int(foreign_used_mib)) + batch_vram_mib + runtime_overhead_mib
@@ -296,12 +319,65 @@ def _plan_projection(
     return batch_vram_bytes, batch_vram_mib, projected_used_mib, projected_headroom_mib
 
 
+def _make_plan(
+    *,
+    batch_per_lane: int,
+    lanes: int,
+    lane_reserve: int,
+    budget_bytes: int,
+    budget_mib: int,
+    used_before_mib: int,
+    runtime_overhead_mib: int,
+    target_mib: int,
+    effective_target_mib: int,
+    desktop_headroom_mib: int,
+    difficulty: int,
+    foreign_used_mib: int,
+    total_mib: int,
+    concurrent_vram_lanes: int,
+) -> CudaVramPlan:
+    conc = max(1, min(int(concurrent_vram_lanes), max(1, lanes)))
+    batch_vram_bytes, batch_vram_mib, projected_used_mib, projected_headroom_mib = (
+        _plan_projection(
+            total_mib=total_mib,
+            lanes=lanes,
+            batch_per_lane=batch_per_lane,
+            difficulty=difficulty,
+            runtime_overhead_mib=runtime_overhead_mib,
+            foreign_used_mib=foreign_used_mib,
+            concurrent_vram_lanes=conc,
+        )
+    )
+    return CudaVramPlan(
+        batch_size=batch_per_lane,
+        lanes=lanes,
+        batch_per_lane=batch_per_lane,
+        lane_reserve=lane_reserve,
+        budget_bytes=budget_bytes,
+        budget_mib=budget_mib,
+        batch_vram_bytes=batch_vram_bytes,
+        batch_vram_mib=batch_vram_mib,
+        used_before_mib=used_before_mib,
+        projected_used_mib=projected_used_mib,
+        projected_headroom_mib=projected_headroom_mib,
+        runtime_overhead_mib=runtime_overhead_mib,
+        target_mib=target_mib,
+        effective_target_mib=effective_target_mib,
+        vram_scale=1.0,
+        desktop_headroom_mib=desktop_headroom_mib,
+        difficulty=difficulty,
+        foreign_used_mib=foreign_used_mib,
+        concurrent_vram_lanes=conc,
+    )
+
+
 def clamp_plan_to_caps(plan: CudaVramPlan) -> CudaVramPlan:
     """
     Shrink batch/lanes until projected VRAM fits miner.ini caps.
 
     Prefers keeping lane count during harvest (lower difficulty) so parallel
     key-prefix search stays wide; trims per-lane batch first, then lanes.
+    Sequential mode (concurrent=1) keeps multi-lanes and only trims batch.
     """
     if plan.within_limits():
         return plan
@@ -309,50 +385,37 @@ def clamp_plan_to_caps(plan: CudaVramPlan) -> CudaVramPlan:
     total_mib = plan.projected_used_mib + plan.projected_headroom_mib
     lanes = plan.lanes
     batch_per_lane = plan.batch_per_lane
+    conc = plan.effective_concurrent_vram_lanes()
 
     for _ in range(10_000):
-        batch_vram_bytes, batch_vram_mib, projected_used_mib, projected_headroom_mib = (
-            _plan_projection(
-                total_mib=total_mib,
-                lanes=lanes,
-                batch_per_lane=batch_per_lane,
-                difficulty=plan.difficulty,
-                runtime_overhead_mib=plan.runtime_overhead_mib,
-                foreign_used_mib=plan.foreign_used_mib,
-            )
+        candidate = _make_plan(
+            batch_per_lane=batch_per_lane,
+            lanes=lanes,
+            lane_reserve=plan.lane_reserve,
+            budget_bytes=plan.budget_bytes,
+            budget_mib=plan.budget_mib,
+            used_before_mib=plan.used_before_mib,
+            runtime_overhead_mib=plan.runtime_overhead_mib,
+            target_mib=plan.target_mib,
+            effective_target_mib=plan.effective_target_mib,
+            desktop_headroom_mib=plan.desktop_headroom_mib,
+            difficulty=plan.difficulty,
+            foreign_used_mib=plan.foreign_used_mib,
+            total_mib=total_mib,
+            concurrent_vram_lanes=conc,
         )
-        if (
-            projected_used_mib <= plan.target_mib
-            and projected_headroom_mib >= plan.desktop_headroom_mib
-        ):
-            return CudaVramPlan(
-                batch_size=batch_per_lane,
-                lanes=lanes,
-                batch_per_lane=batch_per_lane,
-                lane_reserve=plan.lane_reserve,
-                budget_bytes=plan.budget_bytes,
-                budget_mib=plan.budget_mib,
-                batch_vram_bytes=batch_vram_bytes,
-                batch_vram_mib=batch_vram_mib,
-                used_before_mib=plan.used_before_mib,
-                projected_used_mib=projected_used_mib,
-                projected_headroom_mib=projected_headroom_mib,
-                runtime_overhead_mib=plan.runtime_overhead_mib,
-                target_mib=plan.target_mib,
-                effective_target_mib=plan.effective_target_mib,
-                vram_scale=plan.vram_scale,
-                desktop_headroom_mib=plan.desktop_headroom_mib,
-                difficulty=plan.difficulty,
-                foreign_used_mib=plan.foreign_used_mib,
-            )
+        if candidate.within_limits():
+            return candidate
 
         if batch_per_lane > 1:
             batch_per_lane = max(1, int(batch_per_lane * 0.98))
             continue
 
-        if lanes > 1:
+        if lanes > 1 and conc > 1:
+            # Parallel only: drop a lane and re-split budget.
             lanes -= 1
-            per_lane_budget = max(1, plan.budget_bytes // lanes)
+            conc = min(conc, lanes)
+            per_lane_budget = max(1, plan.budget_bytes // conc)
             batch_per_lane = select_batch_size(
                 per_lane_budget,
                 plan.difficulty,
@@ -368,9 +431,10 @@ def clamp_plan_to_caps(plan: CudaVramPlan) -> CudaVramPlan:
 
 def apply_lane_cap(plan: CudaVramPlan, max_lanes: int) -> CudaVramPlan:
     """
-    Force a plan down to at most max_lanes, redistributing batch into fewer lanes.
+    Force a plan down to at most max_lanes.
 
-    Used for live thermal lane derate without discarding the VRAM budget.
+    Parallel: redistribute batch into fewer simultaneous lanes.
+    Sequential: keep full per-lane batch (VRAM is still one buffer).
     """
     cap = max(1, int(max_lanes))
     if plan.lanes <= cap or plan.lanes <= 1:
@@ -378,42 +442,33 @@ def apply_lane_cap(plan: CudaVramPlan, max_lanes: int) -> CudaVramPlan:
 
     total_mib = plan.projected_used_mib + plan.projected_headroom_mib
     lanes = cap
-    per_lane_budget = max(1, plan.budget_bytes // lanes)
-    batch_per_lane = select_batch_size(
-        per_lane_budget,
-        plan.difficulty,
-        explicit_max_batch=0,
-        fill_vram_cap=True,
-    )
-    batch_vram_bytes, batch_vram_mib, projected_used_mib, projected_headroom_mib = (
-        _plan_projection(
-            total_mib=total_mib,
-            lanes=lanes,
-            batch_per_lane=batch_per_lane,
-            difficulty=plan.difficulty,
-            runtime_overhead_mib=plan.runtime_overhead_mib,
-            foreign_used_mib=plan.foreign_used_mib,
+    conc = plan.effective_concurrent_vram_lanes()
+    conc = min(conc, lanes)
+    if conc <= 1:
+        batch_per_lane = plan.batch_per_lane
+    else:
+        per_lane_budget = max(1, plan.budget_bytes // conc)
+        batch_per_lane = select_batch_size(
+            per_lane_budget,
+            plan.difficulty,
+            explicit_max_batch=0,
+            fill_vram_cap=True,
         )
-    )
-    reduced = CudaVramPlan(
-        batch_size=batch_per_lane,
-        lanes=lanes,
+    reduced = _make_plan(
         batch_per_lane=batch_per_lane,
+        lanes=lanes,
         lane_reserve=plan.lane_reserve,
         budget_bytes=plan.budget_bytes,
         budget_mib=plan.budget_mib,
-        batch_vram_bytes=batch_vram_bytes,
-        batch_vram_mib=batch_vram_mib,
         used_before_mib=plan.used_before_mib,
-        projected_used_mib=projected_used_mib,
-        projected_headroom_mib=projected_headroom_mib,
         runtime_overhead_mib=plan.runtime_overhead_mib,
         target_mib=plan.target_mib,
         effective_target_mib=plan.effective_target_mib,
-        vram_scale=plan.vram_scale,
         desktop_headroom_mib=plan.desktop_headroom_mib,
         difficulty=plan.difficulty,
         foreign_used_mib=plan.foreign_used_mib,
+        total_mib=total_mib,
+        concurrent_vram_lanes=conc,
     )
     return clamp_plan_to_caps(reduced)
 
@@ -426,7 +481,7 @@ def plan_cuda_batch(
     desktop_headroom_mib: int,
     difficulty: int,
     reference_difficulty: int,
-    max_lanes: int = 4,
+    max_lanes: int = 8,
     lane_reserve: int = 1,
     explicit_batch: int = 0,
     explicit_max_batch: int = 0,
@@ -435,18 +490,21 @@ def plan_cuda_batch(
     pack_mode: str = "fill",
     foreign_used_mib: int = 0,
     safety_margin_mib: int = 0,
+    concurrent_vram_lanes: int | None = None,
 ) -> CudaVramPlan:
     """
     Size CUDA batch/lanes from miner.ini VRAM caps.
 
-    When ``foreign_used_mib`` > 0 (desktop / background on a display GPU),
-    projected total used = foreign + batch + overhead and is kept ≤ target.
+    concurrent_vram_lanes:
+      None or >= lanes → parallel assumption (VRAM = lanes × batch)
+      1 → sequential multi-prefix (VRAM = one full batch; lanes for key coverage)
     """
     total_mib = total_bytes // (1024 * 1024)
     used_before_mib = max(0, (total_bytes - free_bytes) // (1024 * 1024))
     foreign = max(0, int(foreign_used_mib))
     margin = max(0, int(safety_margin_mib))
     overhead = max(0, int(runtime_overhead_mib))
+    oh_total = overhead + margin
     budget_bytes, effective_target_mib = vram_cap_batch_budget_bytes(
         total_bytes,
         target_mib=target_mib,
@@ -456,16 +514,38 @@ def plan_cuda_batch(
         safety_margin_mib=margin,
     )
     budget_mib = budget_bytes // (1024 * 1024)
-    lanes = cuda_lane_count(
-        difficulty,
-        reference_difficulty=reference_difficulty,
-        max_lanes=max(1, max_lanes),
-        budget_bytes=budget_bytes,
-        min_batch_per_lane=min_batch_per_lane,
-        pack_mode=pack_mode,
-    )
-    reserve = max(0, lane_reserve)
-    per_lane_budget = max(1, budget_bytes // max(1, lanes))
+
+    seq_mode = concurrent_vram_lanes is not None and int(concurrent_vram_lanes) <= 1
+
+    if seq_mode:
+        # Key-prefix width only — VRAM is not split across lanes.
+        boost = (
+            max(1, reference_difficulty // difficulty)
+            if difficulty > 0 and reference_difficulty > 0
+            else 1
+        )
+        cap = max(1, min(int(max_lanes), DEFAULT_ABSOLUTE_MAX_LANES))
+        if difficulty >= reference_difficulty:
+            lanes = 1
+        elif (pack_mode or "fill").strip().lower() == "fill":
+            lanes = cap  # full width at low dif under sequential
+        else:
+            lanes = max(1, min(cap, boost))
+        conc = 1
+        per_lane_budget = max(1, budget_bytes)  # full budget per resident buffer
+    else:
+        lanes = cuda_lane_count(
+            difficulty,
+            reference_difficulty=reference_difficulty,
+            max_lanes=max(1, max_lanes),
+            budget_bytes=budget_bytes,
+            min_batch_per_lane=min_batch_per_lane,
+            pack_mode=pack_mode,
+        )
+        conc = lanes
+        per_lane_budget = max(1, budget_bytes // max(1, conc))
+
+    reserve = max(0, min(int(lane_reserve), max(0, lanes - 1)))
 
     max_batch_per_lane = select_batch_size(
         per_lane_budget,
@@ -480,48 +560,34 @@ def plan_cuda_batch(
     else:
         batch_per_lane = max_batch_per_lane
 
-    batch_size = batch_per_lane
-    batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * max(1, lanes)
-    batch_vram_mib = batch_vram_bytes // (1024 * 1024)
-    # Integer lane split can leave a few MiB unused — grow per-lane batch
-    # while staying inside the total budget (keeps harvest fill honest).
-    if batch_per_lane > 0 and lanes > 0 and budget_bytes > 0:
+    # Top-up integer remainder into per-lane batch.
+    if batch_per_lane > 0 and budget_bytes > 0:
         per_attempt = bytes_per_attempt(difficulty)
         if per_attempt > 0:
             max_total_attempts = int(budget_bytes / per_attempt)
-            max_bpl = max_total_attempts // lanes
+            # Resident attempts = conc * bpl
+            max_bpl = max_total_attempts // max(1, conc)
             if explicit_max_batch > 0:
                 max_bpl = min(max_bpl, explicit_max_batch)
             if explicit_batch > 0:
                 max_bpl = min(max_bpl, explicit_batch)
             if max_bpl > batch_per_lane:
                 batch_per_lane = max_bpl
-                batch_size = batch_per_lane
-                batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * lanes
-                batch_vram_mib = batch_vram_bytes // (1024 * 1024)
 
-    # Total card used once mining: desktop/other + CUDA overhead + batch.
-    projected_used_mib = foreign + batch_vram_mib + overhead + margin
-    projected_headroom_mib = max(0, total_mib - projected_used_mib)
-
-    plan = CudaVramPlan(
-        batch_size=batch_size,
-        lanes=lanes,
+    plan = _make_plan(
         batch_per_lane=batch_per_lane,
+        lanes=lanes,
         lane_reserve=reserve,
         budget_bytes=budget_bytes,
         budget_mib=budget_mib,
-        batch_vram_bytes=batch_vram_bytes,
-        batch_vram_mib=batch_vram_mib,
         used_before_mib=used_before_mib,
-        projected_used_mib=projected_used_mib,
-        projected_headroom_mib=projected_headroom_mib,
-        runtime_overhead_mib=overhead + margin,
+        runtime_overhead_mib=oh_total,
         target_mib=target_mib,
         effective_target_mib=effective_target_mib,
-        vram_scale=1.0,
         desktop_headroom_mib=desktop_headroom_mib,
         difficulty=difficulty,
         foreign_used_mib=foreign,
+        total_mib=total_mib,
+        concurrent_vram_lanes=conc,
     )
     return clamp_plan_to_caps(plan)

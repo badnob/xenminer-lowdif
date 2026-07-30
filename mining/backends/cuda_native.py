@@ -112,6 +112,27 @@ class CudaNativeBackend(MinerBackend):
         self._vram_caps = caps
         return caps
 
+    def _concurrent_vram_lanes_hint(self) -> int | None:
+        """
+        How many lane batches will sit in VRAM together.
+
+        Returns 1 for sequential multi-prefix (default on Win11 without DLL
+        copies / without native multi-lane). None means “parallel = all lanes”.
+        """
+        if getattr(self, "_parallel_mode", "sequential") in ("native", "dll-copies"):
+            return None
+        try:
+            if self._engine.parallel_lanes_supported:
+                return None
+        except Exception:
+            pass
+        if bool(getattr(self.settings, "cuda_allow_dll_lane_copies", False)):
+            # May still fall back to sequential if copies fail — plan sequential
+            # until _sync_lane_engines proves parallel.
+            if self._parallel_mode == "dll-copies":
+                return None
+        return 1
+
     def _plan_from_device(self, info, *, difficulty: int | None = None) -> CudaVramPlan:
         diff = self._difficulty if difficulty is None else difficulty
         explicit = self.settings.cuda_batch_size if self.settings.cuda_batch_size > 0 else 0
@@ -144,6 +165,10 @@ class CudaNativeBackend(MinerBackend):
             foreign = 0
             self._foreign_vram_mib = 0
 
+        # Sequential multi-prefix: only one batch buffer resident → fill VRAM
+        # with full per-lane batch. Parallel native/DLL: VRAM = lanes × batch.
+        concurrent = self._concurrent_vram_lanes_hint()
+
         plan = plan_cuda_batch(
             int(info.total_vram_bytes),
             int(info.free_vram_bytes),
@@ -160,6 +185,7 @@ class CudaNativeBackend(MinerBackend):
             pack_mode=self.settings.cuda_lane_pack_mode,
             foreign_used_mib=foreign,
             safety_margin_mib=safety if account else 0,
+            concurrent_vram_lanes=concurrent,
         )
         if plan.batch_per_lane <= 0:
             raise RuntimeError(
