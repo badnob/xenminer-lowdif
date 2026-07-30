@@ -290,7 +290,7 @@ class VramBatchTests(unittest.TestCase):
         self.assertEqual(batch, memory_limited_batch_size(native_arg, 1100))
 
     def test_sequential_low_dif_fills_vram_with_full_batch(self) -> None:
-        """Win11 default: sequential multi-prefix must not leave VRAM idle."""
+        """Sequential hashrate mode: 1 full-budget stream (not multi-lane overhead)."""
         total = 32607 * 1024 * 1024
         free = (32607 - 3000) * 1024 * 1024
         parallel = plan_cuda_batch(
@@ -321,12 +321,29 @@ class VramBatchTests(unittest.TestCase):
             pack_mode="fill",
             concurrent_vram_lanes=1,
         )
-        self.assertEqual(sequential.lanes, 8)
+        self.assertEqual(sequential.lanes, 1)
         self.assertEqual(sequential.effective_concurrent_vram_lanes(), 1)
         self.assertGreater(sequential.batch_per_lane, parallel.batch_per_lane)
         self.assertLessEqual(sequential.projected_used_mib, sequential.target_mib)
         self.assertTrue(sequential.fills_budget(tolerance_mib=64))
         self.assertGreater(sequential.batch_vram_mib, 15000)
+        # Coverage mode keeps multi-prefix without concurrent VRAM.
+        coverage = plan_cuda_batch(
+            total,
+            free,
+            target_mib=24576,
+            desktop_headroom_mib=4096,
+            difficulty=100,
+            reference_difficulty=REF,
+            max_lanes=8,
+            runtime_overhead_mib=2048,
+            foreign_used_mib=3000,
+            safety_margin_mib=512,
+            pack_mode="coverage",
+            concurrent_vram_lanes=1,
+        )
+        self.assertEqual(coverage.lanes, 8)
+        self.assertEqual(coverage.effective_concurrent_vram_lanes(), 1)
 
 
 if __name__ == "__main__":

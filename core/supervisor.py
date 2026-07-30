@@ -1370,9 +1370,15 @@ class Supervisor:
                         f"{(self.vram_caps.headroom_mib if self.vram_caps else 0):,}MiB",
                     )
                 if self.dashboard:
+                    mode = getattr(self.backend, "parallel_mode", "?")
                     self.dashboard.set_cuda_batch(
                         self.backend.batch_size,
                         self.backend.active_lanes,
+                    )
+                    self._log(
+                        "info",
+                        f"CUDA mode={mode} lanes={self.backend.active_lanes} "
+                        f"batch={self.backend.batch_size:,}",
                     )
 
         if self.dashboard:

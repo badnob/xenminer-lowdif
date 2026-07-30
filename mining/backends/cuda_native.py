@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -127,11 +128,23 @@ class CudaNativeBackend(MinerBackend):
         except Exception:
             pass
         if bool(getattr(self.settings, "cuda_allow_dll_lane_copies", False)):
-            # May still fall back to sequential if copies fail — plan sequential
-            # until _sync_lane_engines proves parallel.
             if self._parallel_mode == "dll-copies":
                 return None
         return 1
+
+    def _plan_pack_mode(self) -> str:
+        """
+        Native/DLL parallel → fill multi-lane.
+        Sequential single engine → hashrate-first single stream unless coverage mode.
+        """
+        base = (self.settings.cuda_lane_pack_mode or "fill").strip().lower()
+        if self._concurrent_vram_lanes_hint() is None:
+            return base if base else "fill"
+        # Sequential: default fill = 1 full batch (max H/s). Explicit coverage
+        # pack modes keep multi-prefix sweeps.
+        if base in ("coverage", "prefixes", "sweep"):
+            return base
+        return "fill"
 
     def _plan_from_device(self, info, *, difficulty: int | None = None) -> CudaVramPlan:
         diff = self._difficulty if difficulty is None else difficulty
@@ -182,7 +195,7 @@ class CudaNativeBackend(MinerBackend):
             explicit_max_batch=self.settings.cuda_max_batch_size,
             runtime_overhead_mib=caps.runtime_overhead_mib,
             min_batch_per_lane=self.settings.cuda_min_batch_per_lane,
-            pack_mode=self.settings.cuda_lane_pack_mode,
+            pack_mode=self._plan_pack_mode(),
             foreign_used_mib=foreign,
             safety_margin_mib=safety if account else 0,
             concurrent_vram_lanes=concurrent,
@@ -738,10 +751,13 @@ class CudaNativeBackend(MinerBackend):
 
         parallel = self._lanes > 1 and self._parallel_mode in ("native", "dll-copies")
         if not parallel:
+            # Sequential: one stream. Prefer wall-clock H/s from total work/time.
+            t0 = time.perf_counter()
             total_hashes = 0
             total_hs = 0.0
             hit = None
             lanes_done = 0
+            # Hashrate mode is 1 lane; coverage mode may walk several prefixes.
             for lane in range(self._lanes):
                 if self._abort_check and self._abort_check():
                     abort_reason = (
@@ -752,10 +768,13 @@ class CudaNativeBackend(MinerBackend):
                 result = self._run_lane(lane)
                 lanes_done += 1
                 total_hashes += int(result.attempts)
-                total_hs += result.hashrate
+                total_hs = max(total_hs, float(result.hashrate))
                 if hit is None:
                     hit = self._hit_from_result(result)
-            self._last_hs = total_hs
+            elapsed = max(time.perf_counter() - t0, 1e-9)
+            # Prefer measured throughput over summing sequential lane rates.
+            measured = total_hashes / elapsed if total_hashes > 0 else total_hs
+            self._last_hs = measured if measured > 0 else total_hs
             return MineBatchResult(
                 hashes_done=total_hashes,
                 hit=hit,
@@ -794,6 +813,10 @@ class CudaNativeBackend(MinerBackend):
             aborted=bool(abort_reason),
             abort_reason=abort_reason,
         )
+
+    @property
+    def parallel_mode(self) -> str:
+        return self._parallel_mode
 
     @property
     def is_running(self) -> bool:

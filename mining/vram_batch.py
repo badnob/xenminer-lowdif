@@ -518,19 +518,28 @@ def plan_cuda_batch(
     seq_mode = concurrent_vram_lanes is not None and int(concurrent_vram_lanes) <= 1
 
     if seq_mode:
-        # Key-prefix width only — VRAM is not split across lanes.
-        boost = (
-            max(1, reference_difficulty // difficulty)
-            if difficulty > 0 and reference_difficulty > 0
-            else 1
-        )
-        cap = max(1, min(int(max_lanes), DEFAULT_ABSOLUTE_MAX_LANES))
+        # One resident CUDA buffer. Extra logical lanes only change key prefixes
+        # back-to-back — they do NOT raise hashrate and add launch overhead.
+        # Default: 1 full-budget batch for max single-stream H/s (Tony saw ~2MH/s
+        # at dif 100 this way). Set sequential_coverage_lanes > 1 for key sweep.
+        coverage = max(1, int(max_lanes))  # caller passes coverage intent
+        # plan_cuda_batch max_lanes is the coverage ceiling; hashrate mode uses 1
+        # unless concurrent was forced. Coverage multi-prefix is opt-in via
+        # max_lanes when pack_mode is "coverage" or min_batch forces multi.
+        mode = (pack_mode or "fill").strip().lower()
         if difficulty >= reference_difficulty:
             lanes = 1
-        elif (pack_mode or "fill").strip().lower() == "fill":
-            lanes = cap  # full width at low dif under sequential
+        elif mode in ("coverage", "prefixes", "sweep"):
+            boost = (
+                max(1, reference_difficulty // difficulty)
+                if difficulty > 0 and reference_difficulty > 0
+                else 1
+            )
+            cap = max(1, min(int(max_lanes), DEFAULT_ABSOLUTE_MAX_LANES))
+            lanes = max(1, min(cap, max(boost, cap)))
         else:
-            lanes = max(1, min(cap, boost))
+            # fill / boost / default → single full stream (hashrate first)
+            lanes = 1
         conc = 1
         per_lane_budget = max(1, budget_bytes)  # full budget per resident buffer
     else:

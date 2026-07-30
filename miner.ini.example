@@ -123,16 +123,18 @@ enabled = false
 dll_path = native/build/bin/xen_cuda.dll
 batch_size = 0
 max_batch_size = 0
-# Dense low-dif harvest: pack key-prefix lanes up to VRAM cap
-# Daily-driver 5090: 8 is a good balance; try 12 if cool/smooth and sequential
-# fills VRAM with one big batch (parallel native uses more simultaneous VRAM)
+# Dense low-dif harvest
+# max_lanes matters when native multi-lane OR lane_pack_mode=coverage.
+# Sequential Win11 default: 1 full VRAM stream (best H/s). Multi-lane needs
+# native xen_cuda_set_lane_count or allow_dll_lane_copies=true.
 max_lanes = 8
 lane_reserve = 1
-# fill = pack as many lanes as VRAM allows (min_batch_per_lane each)
-# boost = legacy reference//difficulty
+# fill = VRAM-first (1 stream if sequential; multi if parallel native)
+# coverage = sequential multi key-prefix sweep (not faster H/s)
+# boost = legacy reference//difficulty lane count when parallel
 lane_pack_mode = fill
 min_batch_per_lane = 2048
-# false = safe sequential multi-prefix (fills VRAM with full batch per pass)
+# false = sequential single-stream (safe, best H/s without native multi-lane)
 allow_dll_lane_copies = false
 # 0 = use efficiency.runtime_overhead_pct of GPU total
 runtime_overhead_mib = 0
