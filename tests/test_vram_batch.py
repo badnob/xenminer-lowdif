@@ -68,22 +68,71 @@ class VramBatchTests(unittest.TestCase):
         self.assertEqual(plan.batch_per_lane, max_batch)
         self.assertLess(plan.batch_per_lane, 50000)
 
-    def test_cap_budget_ignores_live_free_memory(self) -> None:
+    def test_cap_budget_steady_without_foreign(self) -> None:
         total = 32607 * 1024 * 1024
         cold = vram_cap_batch_budget_bytes(
             total,
             target_mib=22528,
             desktop_headroom_mib=8192,
             runtime_overhead_mib=2048,
+            foreign_used_mib=0,
         )
         hot = vram_cap_batch_budget_bytes(
             total,
             target_mib=22528,
             desktop_headroom_mib=8192,
             runtime_overhead_mib=2048,
+            foreign_used_mib=0,
         )
         self.assertEqual(cold, hot)
         self.assertEqual(cold[0] // (1024 * 1024), 20480)
+
+    def test_desktop_foreign_vram_reduces_batch_budget(self) -> None:
+        total = 32607 * 1024 * 1024
+        none = vram_cap_batch_budget_bytes(
+            total,
+            target_mib=24576,
+            desktop_headroom_mib=4096,
+            runtime_overhead_mib=2048,
+            foreign_used_mib=0,
+            safety_margin_mib=512,
+        )
+        desk = vram_cap_batch_budget_bytes(
+            total,
+            target_mib=24576,
+            desktop_headroom_mib=4096,
+            runtime_overhead_mib=2048,
+            foreign_used_mib=4096,
+            safety_margin_mib=512,
+        )
+        self.assertLess(desk[0], none[0])
+        # foreign 4096 + oh 2048 + margin 512 = 6656 → batch ≤ 24576-6656
+        self.assertEqual(desk[0] // (1024 * 1024), 24576 - 4096 - 2048 - 512)
+
+    def test_plan_with_desktop_stays_under_total_target(self) -> None:
+        total = 32607 * 1024 * 1024
+        # 4 GiB already used by desktop before mining
+        free = (32607 - 4096) * 1024 * 1024
+        plan = plan_cuda_batch(
+            total,
+            free,
+            target_mib=24576,
+            desktop_headroom_mib=4096,
+            difficulty=1100,
+            reference_difficulty=REF,
+            max_lanes=MAX_LANES,
+            runtime_overhead_mib=2048,
+            foreign_used_mib=4096,
+            safety_margin_mib=512,
+        )
+        self.assertGreater(plan.batch_per_lane, 0)
+        self.assertLessEqual(plan.projected_used_mib, plan.target_mib)
+        self.assertEqual(plan.foreign_used_mib, 4096)
+        # projected includes desktop
+        self.assertGreaterEqual(
+            plan.projected_used_mib,
+            plan.batch_vram_mib + plan.foreign_used_mib,
+        )
 
     def test_low_difficulty_spins_up_lanes_and_fills_cap(self) -> None:
         total = 32607 * 1024 * 1024

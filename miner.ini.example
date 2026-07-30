@@ -31,11 +31,16 @@ min_headroom_pct = 3.68
 runtime_overhead_pct = 6.28
 min_headroom_floor_mib = 512
 runtime_overhead_floor_mib = 256
-# Absolute MiB overrides (0 = use percentages only). 24576 ≈ 24 GiB cap on 32 GiB FE.
+# Absolute MiB overrides (0 = use percentages only). 24576 ≈ 24 GiB TOTAL used cap
+# (desktop + miner). With vram_account_desktop=true, batch shrinks for DWM/Chrome.
 target_vram_mib = 24576
 headroom_mib = 0
 emergency_vram_mib = 0
 min_headroom_mib = 0
+# Subtract Windows desktop / background VRAM from the mining budget (display GPU).
+vram_account_desktop = true
+# Extra pad for allocator fragmentation / estimate error
+vram_safety_margin_mib = 512
 # Die (GPU) temps — tighter than board
 max_gpu_temp_c = 84
 warn_gpu_temp_c = 78

@@ -39,6 +39,10 @@ class Settings:
     headroom_mib: int
     emergency_vram_mib: int
     min_headroom_mib: int
+    # Keep TOTAL NVML used ≤ target by subtracting desktop/background VRAM.
+    vram_account_desktop: bool
+    # Extra MiB pad on top of runtime overhead (fragmentation / estimate error).
+    vram_safety_margin_mib: int
     max_gpu_temp_c: int
     warn_gpu_temp_c: int
     # Board / PCB (often hotter than die under Argon2). Separate from die caps.
@@ -194,6 +198,12 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         headroom_mib=int(eff.get("headroom_mib", "0")),
         emergency_vram_mib=int(eff.get("emergency_vram_mib", "0")),
         min_headroom_mib=int(eff.get("min_headroom_mib", "0")),
+        # Default true: Win11 display GPU + Chrome/DWM must not be ignored.
+        vram_account_desktop=str(eff.get("vram_account_desktop", "true"))
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on"),
+        vram_safety_margin_mib=int(eff.get("vram_safety_margin_mib", "512")),
         max_gpu_temp_c=int(eff.get("max_gpu_temp_c", "84")),
         warn_gpu_temp_c=int(eff.get("warn_gpu_temp_c", "78")),
         # Board: Tony measured ~88C sustained; hard cap 90 with warn before that.

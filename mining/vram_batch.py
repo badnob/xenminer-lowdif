@@ -41,6 +41,8 @@ class CudaVramPlan:
     vram_scale: float
     desktop_headroom_mib: int
     difficulty: int
+    # Non-miner VRAM (Windows desktop / other apps) baked into projected_used.
+    foreign_used_mib: int = 0
 
     def summary(self) -> str:
         lane_part = (
@@ -53,14 +55,20 @@ class CudaVramPlan:
             if self.lane_reserve > 0 and self.lanes >= self.lane_reserve
             else ""
         )
+        foreign = (
+            f" desktop/other={self.foreign_used_mib:,}MiB"
+            if self.foreign_used_mib > 0
+            else ""
+        )
         return (
             f"{lane_part}{reserve} "
             f"budget={self.budget_mib:,}MiB "
             f"batch_vram≈{self.batch_vram_mib:,}MiB "
             f"cuda_overhead={self.runtime_overhead_mib:,}MiB "
+            f"{foreign} "
             f"projected_used={self.projected_used_mib:,}MiB "
             f"projected_free={self.projected_headroom_mib:,}MiB "
-            f"(target≤{self.target_mib:,}MiB desktop≥{self.desktop_headroom_mib:,}MiB)"
+            f"(target≤{self.target_mib:,}MiB desktop≥{self.desktop_headroom_mib:,}MiB free)"
         )
 
     def within_limits(self) -> bool:
@@ -153,21 +161,56 @@ def vram_cap_batch_budget_bytes(
     target_mib: int,
     desktop_headroom_mib: int,
     runtime_overhead_mib: int,
+    foreign_used_mib: int = 0,
+    safety_margin_mib: int = 0,
 ) -> tuple[int, int]:
     """
-    Full batch-buffer budget from miner.ini caps.
+    Full batch-buffer budget from miner.ini caps + non-miner VRAM.
 
-    Live NVML free memory is intentionally ignored so difficulty changes and
-    mid-session replans use the same steady-state formula.
+    ``foreign_used_mib`` is VRAM already used by Windows desktop, browsers,
+    and other apps (display GPU daily-driver). Batch is sized so:
+
+        foreign + runtime_overhead + batch  ≤  target
+        free after                          ≥  desktop_headroom
+
+    Live free is not required for the steady formula; foreign baseline is.
     """
     total_mib = total_bytes // (1024 * 1024)
     effective_target_mib = target_mib
-    cap_batch_mib = max(0, effective_target_mib - runtime_overhead_mib)
+    foreign = max(0, int(foreign_used_mib))
+    margin = max(0, int(safety_margin_mib))
+    overhead = max(0, int(runtime_overhead_mib)) + margin
+
+    # Room under the TOTAL used target after desktop/other + CUDA overhead.
+    cap_batch_mib = max(0, effective_target_mib - foreign - overhead)
+    # Room while keeping configured free headroom for compositor/UI.
     headroom_limited_mib = max(
-        0, total_mib - desktop_headroom_mib - runtime_overhead_mib
+        0, total_mib - desktop_headroom_mib - foreign - overhead
     )
     allowed_mib = min(cap_batch_mib, headroom_limited_mib)
     return allowed_mib * 1024 * 1024, effective_target_mib
+
+
+def estimate_foreign_vram_mib(
+    *,
+    used_mib: int,
+    batch_vram_mib: int = 0,
+    runtime_overhead_mib: int = 0,
+    desktop_baseline_mib: int = 0,
+) -> int:
+    """
+    Estimate non-miner VRAM from a live used reading.
+
+    Prefer the higher of:
+    - cold desktop baseline (captured before mining), and
+    - used − (current batch + overhead) when a plan is active
+    so Chrome/DWM growth during the session is not ignored.
+    """
+    used = max(0, int(used_mib))
+    minerish = max(0, int(batch_vram_mib)) + max(0, int(runtime_overhead_mib))
+    inferred = max(0, used - minerish)
+    baseline = max(0, int(desktop_baseline_mib))
+    return max(baseline, inferred)
 
 
 def memory_limited_batch_size(
@@ -242,10 +285,13 @@ def _plan_projection(
     batch_per_lane: int,
     difficulty: int,
     runtime_overhead_mib: int,
+    foreign_used_mib: int = 0,
 ) -> tuple[int, int, int, int]:
     batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * lanes
     batch_vram_mib = batch_vram_bytes // (1024 * 1024)
-    projected_used_mib = batch_vram_mib + runtime_overhead_mib
+    projected_used_mib = (
+        max(0, int(foreign_used_mib)) + batch_vram_mib + runtime_overhead_mib
+    )
     projected_headroom_mib = max(0, total_mib - projected_used_mib)
     return batch_vram_bytes, batch_vram_mib, projected_used_mib, projected_headroom_mib
 
@@ -272,6 +318,7 @@ def clamp_plan_to_caps(plan: CudaVramPlan) -> CudaVramPlan:
                 batch_per_lane=batch_per_lane,
                 difficulty=plan.difficulty,
                 runtime_overhead_mib=plan.runtime_overhead_mib,
+                foreign_used_mib=plan.foreign_used_mib,
             )
         )
         if (
@@ -296,6 +343,7 @@ def clamp_plan_to_caps(plan: CudaVramPlan) -> CudaVramPlan:
                 vram_scale=plan.vram_scale,
                 desktop_headroom_mib=plan.desktop_headroom_mib,
                 difficulty=plan.difficulty,
+                foreign_used_mib=plan.foreign_used_mib,
             )
 
         if batch_per_lane > 1:
@@ -344,6 +392,7 @@ def apply_lane_cap(plan: CudaVramPlan, max_lanes: int) -> CudaVramPlan:
             batch_per_lane=batch_per_lane,
             difficulty=plan.difficulty,
             runtime_overhead_mib=plan.runtime_overhead_mib,
+            foreign_used_mib=plan.foreign_used_mib,
         )
     )
     reduced = CudaVramPlan(
@@ -364,6 +413,7 @@ def apply_lane_cap(plan: CudaVramPlan, max_lanes: int) -> CudaVramPlan:
         vram_scale=plan.vram_scale,
         desktop_headroom_mib=plan.desktop_headroom_mib,
         difficulty=plan.difficulty,
+        foreign_used_mib=plan.foreign_used_mib,
     )
     return clamp_plan_to_caps(reduced)
 
@@ -383,15 +433,27 @@ def plan_cuda_batch(
     runtime_overhead_mib: int = DEFAULT_CUDA_RUNTIME_OVERHEAD_MIB,
     min_batch_per_lane: int = DEFAULT_MIN_BATCH_PER_LANE,
     pack_mode: str = "fill",
+    foreign_used_mib: int = 0,
+    safety_margin_mib: int = 0,
 ) -> CudaVramPlan:
-    """Size CUDA batch/lanes from miner.ini VRAM caps (not live free memory)."""
+    """
+    Size CUDA batch/lanes from miner.ini VRAM caps.
+
+    When ``foreign_used_mib`` > 0 (desktop / background on a display GPU),
+    projected total used = foreign + batch + overhead and is kept ≤ target.
+    """
     total_mib = total_bytes // (1024 * 1024)
     used_before_mib = max(0, (total_bytes - free_bytes) // (1024 * 1024))
+    foreign = max(0, int(foreign_used_mib))
+    margin = max(0, int(safety_margin_mib))
+    overhead = max(0, int(runtime_overhead_mib))
     budget_bytes, effective_target_mib = vram_cap_batch_budget_bytes(
         total_bytes,
         target_mib=target_mib,
         desktop_headroom_mib=desktop_headroom_mib,
-        runtime_overhead_mib=runtime_overhead_mib,
+        runtime_overhead_mib=overhead,
+        foreign_used_mib=foreign,
+        safety_margin_mib=margin,
     )
     budget_mib = budget_bytes // (1024 * 1024)
     lanes = cuda_lane_count(
@@ -419,7 +481,7 @@ def plan_cuda_batch(
         batch_per_lane = max_batch_per_lane
 
     batch_size = batch_per_lane
-    batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * lanes
+    batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * max(1, lanes)
     batch_vram_mib = batch_vram_bytes // (1024 * 1024)
     # Integer lane split can leave a few MiB unused — grow per-lane batch
     # while staying inside the total budget (keeps harvest fill honest).
@@ -438,7 +500,8 @@ def plan_cuda_batch(
                 batch_vram_bytes = estimate_batch_vram_bytes(batch_per_lane, difficulty) * lanes
                 batch_vram_mib = batch_vram_bytes // (1024 * 1024)
 
-    projected_used_mib = batch_vram_mib + runtime_overhead_mib
+    # Total card used once mining: desktop/other + CUDA overhead + batch.
+    projected_used_mib = foreign + batch_vram_mib + overhead + margin
     projected_headroom_mib = max(0, total_mib - projected_used_mib)
 
     plan = CudaVramPlan(
@@ -453,11 +516,12 @@ def plan_cuda_batch(
         used_before_mib=used_before_mib,
         projected_used_mib=projected_used_mib,
         projected_headroom_mib=projected_headroom_mib,
-        runtime_overhead_mib=runtime_overhead_mib,
+        runtime_overhead_mib=overhead + margin,
         target_mib=target_mib,
         effective_target_mib=effective_target_mib,
         vram_scale=1.0,
         desktop_headroom_mib=desktop_headroom_mib,
         difficulty=difficulty,
+        foreign_used_mib=foreign,
     )
     return clamp_plan_to_caps(plan)

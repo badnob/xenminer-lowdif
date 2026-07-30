@@ -31,6 +31,7 @@ from mining.vram_batch import (
     CUDA_ENGINE_RESERVE_BYTES,
     CudaVramPlan,
     apply_lane_cap,
+    estimate_foreign_vram_mib,
     memory_limited_batch_size,
     plan_cuda_batch,
 )
@@ -76,6 +77,9 @@ class CudaNativeBackend(MinerBackend):
         self._base_vram_plan: CudaVramPlan | None = None
         self._thermal_lane_cap: int | None = None
         self._last_temp_c = 0
+        # Desktop / other apps VRAM (display GPU). Captured cold, refreshed on replan.
+        self._desktop_baseline_mib = 0
+        self._foreign_vram_mib = 0
 
     def set_vram_caps(self, caps: VramCaps | None) -> None:
         self._vram_caps = caps
@@ -107,6 +111,33 @@ class CudaNativeBackend(MinerBackend):
         explicit = self.settings.cuda_batch_size if self.settings.cuda_batch_size > 0 else 0
         total_mib = max(1, int(info.total_vram_bytes) // (1024 * 1024))
         caps = self._caps_for_total(total_mib)
+        used_mib = max(
+            0,
+            (int(info.total_vram_bytes) - int(info.free_vram_bytes)) // (1024 * 1024),
+        )
+        account = bool(getattr(self.settings, "vram_account_desktop", True))
+        safety = int(getattr(self.settings, "vram_safety_margin_mib", 512) or 0)
+        if account:
+            cur_batch = 0
+            cur_oh = caps.runtime_overhead_mib
+            if self._vram_plan is not None:
+                cur_batch = int(self._vram_plan.batch_vram_mib)
+                cur_oh = int(self._vram_plan.runtime_overhead_mib)
+            foreign = estimate_foreign_vram_mib(
+                used_mib=used_mib,
+                batch_vram_mib=cur_batch,
+                runtime_overhead_mib=cur_oh if self._vram_plan is not None else 0,
+                desktop_baseline_mib=self._desktop_baseline_mib,
+            )
+            # First reading before mining: treat all used as foreign (desktop).
+            if self._desktop_baseline_mib <= 0 and self._vram_plan is None:
+                foreign = used_mib
+                self._desktop_baseline_mib = used_mib
+            self._foreign_vram_mib = foreign
+        else:
+            foreign = 0
+            self._foreign_vram_mib = 0
+
         plan = plan_cuda_batch(
             int(info.total_vram_bytes),
             int(info.free_vram_bytes),
@@ -121,6 +152,8 @@ class CudaNativeBackend(MinerBackend):
             runtime_overhead_mib=caps.runtime_overhead_mib,
             min_batch_per_lane=self.settings.cuda_min_batch_per_lane,
             pack_mode=self.settings.cuda_lane_pack_mode,
+            foreign_used_mib=foreign,
+            safety_margin_mib=safety if account else 0,
         )
         if plan.batch_per_lane <= 0:
             raise RuntimeError(
@@ -128,6 +161,7 @@ class CudaNativeBackend(MinerBackend):
                 f"budget={plan.budget_mib}MiB "
                 f"target={caps.target_mib}MiB "
                 f"headroom={caps.headroom_mib}MiB "
+                f"desktop/other={foreign}MiB "
                 f"gpu_total={caps.total_mib}MiB"
             )
         if not plan.within_limits():
@@ -140,7 +174,7 @@ class CudaNativeBackend(MinerBackend):
         ):
             # Soft: integer packing can leave a thin gap; only hard-fail on large shortfalls.
             short = plan.budget_mib - plan.batch_vram_mib
-            if short > max(64, plan.budget_mib // 20):
+            if short > max(64, max(1, plan.budget_mib) // 20):
                 raise RuntimeError(
                     f"CUDA harvest plan under-filled VRAM cap: {plan.summary()}"
                 )
@@ -399,9 +433,28 @@ class CudaNativeBackend(MinerBackend):
     def start(self) -> None:
         if self._started:
             return
-        reserve = self.settings.headroom_mib * 1024 * 1024
-        self._engine.init(device_id=0, reserve_bytes=reserve)
+        # Prefer resolved desktop headroom, not raw ini headroom_mib (often 0).
+        total_guess = 32768
+        caps = self._caps_for_total(total_guess)
+        reserve_mib = max(
+            caps.headroom_mib,
+            int(self.settings.min_headroom_floor_mib),
+            512,
+        )
+        if self.settings.headroom_mib > 0:
+            reserve_mib = max(reserve_mib, self.settings.headroom_mib)
+        self._engine.init(device_id=0, reserve_bytes=reserve_mib * 1024 * 1024)
         info = self._engine.device_info(0)
+        # Cold baseline = whatever is already used (DWM, Chrome, etc.).
+        used_mib = max(
+            0,
+            (int(info.total_vram_bytes) - int(info.free_vram_bytes)) // (1024 * 1024),
+        )
+        self._desktop_baseline_mib = used_mib
+        self._foreign_vram_mib = used_mib
+        # Re-resolve caps with real total.
+        total_mib = max(1, int(info.total_vram_bytes) // (1024 * 1024))
+        self._caps_for_total(total_mib)
         base = self._plan_from_device(info)
         self._verify_batch_fits_budget(base, self._difficulty)
         plan = self._effective_plan(base)
@@ -417,6 +470,8 @@ class CudaNativeBackend(MinerBackend):
             self._vram_plan = None
             self._base_vram_plan = None
             self._thermal_lane_cap = None
+            self._desktop_baseline_mib = 0
+            self._foreign_vram_mib = 0
             self._parallel_mode = "sequential"
 
     def set_lanes(self, lanes: int) -> None:

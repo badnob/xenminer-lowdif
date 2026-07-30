@@ -11,9 +11,10 @@ This fork fills a ~24 GiB VRAM target with **many parallel key-prefix lanes**,
 
 | Knob | Value | Why |
 |------|-------|-----|
-| `target_vram_mib` | 24576 | ~24 GiB used cap |
-| `max_lanes` | 12 | dense harvest ceiling |
-| `lane_pack_mode` | fill | pack by VRAM + min batch |
+| `target_vram_mib` | 24576 | **TOTAL** used cap (desktop + miner) |
+| `vram_account_desktop` | true | subtract DWM/Chrome/etc. from batch budget |
+| `vram_safety_margin_mib` | 512 | pad for estimate error |
+| `max_lanes` | 4 | daily-driver harvest ceiling |
 | `min_batch_per_lane` | 2048 | each lane still does real work |
 | `warn_gpu_temp_c` / `max_gpu_temp_c` | **78 / 84** | **die** limits |
 | `warn_board_temp_c` / `max_board_temp_c` | **85 / 90** | **board** limits (Tony: ~88 peak week) |
