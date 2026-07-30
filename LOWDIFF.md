@@ -15,7 +15,8 @@ This fork fills a ~24 GiB VRAM target with **many parallel key-prefix lanes**,
 | `max_lanes` | 12 | dense harvest ceiling |
 | `lane_pack_mode` | fill | pack by VRAM + min batch |
 | `min_batch_per_lane` | 2048 | each lane still does real work |
-| `warn_gpu_temp_c` / `max_gpu_temp_c` | 68 / 72 | earlier heat combat |
+| `warn_gpu_temp_c` / `max_gpu_temp_c` | **78 / 84** | **die** limits |
+| `warn_board_temp_c` / `max_board_temp_c` | **85 / 90** | **board** limits (Tony: ~88 peak week) |
 | `gpu_thermal_lane_enabled` | true | live lane shrink |
 | `gpu_difficulty_lane_bias` | true | ease lanes toward reference |
 | `gpu_power_min_pct` / full ratio | 65 / 1.5 | power eases sooner on high dif |
@@ -29,15 +30,15 @@ This fork fills a ~24 GiB VRAM target with **many parallel key-prefix lanes**,
 
 ## Safety ladder
 
-1. Multi-sensor control temp = max(die, board, hotspot, memory) when NVML exposes them
-2. High-diff temp tighten (default +0…+12°C from 1.5×→1.9× reference) — catches board heat when only die is readable
+1. Separate **die** and **board** caps — stop if either hits max
+2. Multi-sensor NVML when available; high-diff +°C proxy only if board sensor missing
 3. Difficulty lane bias (as dif climbs toward reference)
-4. Thermal batch scale (soft shrink batch near warn)
-5. Thermal lane cap (live drop lanes near warn → 1 at max)
+4. Thermal batch scale (soft shrink near die or board warn)
+5. Thermal lane cap (live drop lanes)
 6. Power target ease (difficulty-aware NVML limit)
 7. Hard temp stop + cooldown; optional persistent lane-cap reduction
 
-At **difficulty ~2100** (~1.9× reference 1100) the high-diff proxy is fully on: a 68°C die reading is treated as **80°C** for policy, so warn/max fire before the board sits at 80°C+ unchallenged.
+**Board 90°C** is a hard ceiling (Tony measured ~88°C sustained). **Die** stays on a tighter band (default warn 78 / max 84).
 
 ## Files touched vs upstream
 

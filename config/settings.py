@@ -41,6 +41,9 @@ class Settings:
     min_headroom_mib: int
     max_gpu_temp_c: int
     warn_gpu_temp_c: int
+    # Board / PCB (often hotter than die under Argon2). Separate from die caps.
+    max_board_temp_c: int
+    warn_board_temp_c: int
     gpu_cooldown_s: int
     gpu_power_boost_enabled: bool
     gpu_power_target_pct: int
@@ -191,8 +194,11 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         headroom_mib=int(eff.get("headroom_mib", "0")),
         emergency_vram_mib=int(eff.get("emergency_vram_mib", "0")),
         min_headroom_mib=int(eff.get("min_headroom_mib", "0")),
-        max_gpu_temp_c=int(eff.get("max_gpu_temp_c", "75")),
-        warn_gpu_temp_c=int(eff.get("warn_gpu_temp_c", "72")),
+        max_gpu_temp_c=int(eff.get("max_gpu_temp_c", "84")),
+        warn_gpu_temp_c=int(eff.get("warn_gpu_temp_c", "78")),
+        # Board: Tony measured ~88C sustained; hard cap 90 with warn before that.
+        max_board_temp_c=int(eff.get("max_board_temp_c", "90")),
+        warn_board_temp_c=int(eff.get("warn_board_temp_c", "85")),
         gpu_cooldown_s=int(eff.get("gpu_cooldown_s", "45")),
         gpu_power_boost_enabled=eff.getboolean("gpu_power_boost_enabled", fallback=True),
         gpu_power_target_pct=int(eff.get("gpu_power_target_pct", "100")),

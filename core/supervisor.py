@@ -16,7 +16,7 @@ from efficiency.gpu_power import GpuPowerBooster
 from efficiency.lane_manager import LaneManager
 from efficiency.thermal_policy import effective_control_temp_c
 from efficiency.vram_budget import VramBudget
-from efficiency.vram_guard import VramGuard
+from efficiency.vram_guard import VramGuard, evaluate_snapshot_temps
 from efficiency.vram_policy import VramCaps, resolve_vram_caps
 from mining.backends.cpu import CpuArgon2Backend
 from mining.backends.cuda_native import CudaNativeBackend
@@ -113,7 +113,10 @@ class Supervisor:
             settings.max_gpu_temp_c,
             settings.warn_gpu_temp_c,
             settings.gpu_cooldown_s,
+            max_board_temp_c=settings.max_board_temp_c,
+            warn_board_temp_c=settings.warn_board_temp_c,
         )
+        self._configure_guard_temp_context()
         self.is_cuda_native = settings.backend == "cuda"
         self.is_legacy_gpu = settings.backend == "gpu" or settings.gpu_enabled
         self.is_gpu = self.is_cuda_native or self.is_legacy_gpu
@@ -251,10 +254,24 @@ class Supervisor:
             s.max_gpu_temp_c,
             s.warn_gpu_temp_c,
             s.gpu_cooldown_s,
+            max_board_temp_c=s.max_board_temp_c,
+            warn_board_temp_c=s.warn_board_temp_c,
         )
+        self._configure_guard_temp_context()
         if isinstance(self.backend, CudaNativeBackend):
             self.backend.set_vram_caps(caps)
         self._log("info", caps.summary())
+
+    def _configure_guard_temp_context(self) -> None:
+        s = self.settings
+        self.guard.set_difficulty_context(
+            self._mining_difficulty() if hasattr(self, "_network_difficulty") else s.memory_cost,
+            reference_difficulty=s.vram_reference_difficulty,
+            high_diff_enabled=s.gpu_high_diff_temp_enabled,
+            start_ratio=s.gpu_high_diff_temp_start_ratio,
+            full_ratio=s.gpu_high_diff_temp_full_ratio,
+            max_tighten_c=s.gpu_high_diff_temp_max_tighten_c,
+        )
 
     def _kill_stray_xenblocks(self) -> None:
         if sys.platform == "win32":
@@ -344,6 +361,14 @@ class Supervisor:
             self._begin_difficulty_transition(old_diff, diff)
         if self._power_booster is not None:
             self._power_booster.set_difficulty(diff)
+        self.guard.set_difficulty_context(
+            diff,
+            reference_difficulty=self.settings.vram_reference_difficulty,
+            high_diff_enabled=self.settings.gpu_high_diff_temp_enabled,
+            start_ratio=self.settings.gpu_high_diff_temp_start_ratio,
+            full_ratio=self.settings.gpu_high_diff_temp_full_ratio,
+            max_tighten_c=self.settings.gpu_high_diff_temp_max_tighten_c,
+        )
         return diff
 
     def _sync_dashboard_stats(self, snap=None) -> None:
@@ -455,30 +480,51 @@ class Supervisor:
             )
         self._maybe_report_xbs_holdings()
 
-    def _policy_temp_c(self, snap: GpuSnapshot | None) -> int:
-        """
-        Control temperature for thermal policy.
-
-        Uses hottest NVML sensor (die/board/hotspot/mem) already folded into
-        snap.temperature_c, then optionally adds a high-difficulty heat proxy
-        so board-hot / die-cool sessions still derate at e.g. difficulty 2100.
-        """
+    def _policy_temp_eval(self, snap: GpuSnapshot | None):
+        """Die + board dual-limit evaluation (preferred thermal path)."""
         if snap is None:
-            return 0
-        measured = int(snap.temperature_c)
-        if not self.settings.gpu_high_diff_temp_enabled:
-            return measured
-        return effective_control_temp_c(
-            measured,
-            self._mining_difficulty(),
-            self.settings.vram_reference_difficulty,
-            start_ratio=self.settings.gpu_high_diff_temp_start_ratio,
-            full_ratio=self.settings.gpu_high_diff_temp_full_ratio,
-            max_tighten_c=self.settings.gpu_high_diff_temp_max_tighten_c,
+            return None
+        s = self.settings
+        planned = int(getattr(self.backend, "active_lanes", 1) or 1)
+        base_plan = getattr(self.backend, "_base_vram_plan", None)
+        if base_plan is not None:
+            planned = max(planned, int(getattr(base_plan, "lanes", planned) or planned))
+        return evaluate_snapshot_temps(
+            snap,
+            die_warn_c=s.warn_gpu_temp_c,
+            die_max_c=s.max_gpu_temp_c,
+            board_warn_c=s.warn_board_temp_c,
+            board_max_c=s.max_board_temp_c,
+            planned_lanes=planned,
+            min_lanes=max(1, int(s.gpu_thermal_lane_min)),
+            batch_min_scale=s.gpu_thermal_batch_min_scale,
+            difficulty=self._mining_difficulty(),
+            reference_difficulty=s.vram_reference_difficulty,
+            high_diff_enabled=s.gpu_high_diff_temp_enabled,
+            high_diff_start_ratio=s.gpu_high_diff_temp_start_ratio,
+            high_diff_full_ratio=s.gpu_high_diff_temp_full_ratio,
+            high_diff_max_tighten_c=s.gpu_high_diff_temp_max_tighten_c,
         )
 
+    def _policy_temp_c(self, snap: GpuSnapshot | None) -> int:
+        """
+        Legacy single control temp for power booster.
+
+        Uses the hotter of effective die / board relative to how hard they press
+        their own limits (mapped back to a temp for GpuPowerBooster).
+        """
+        tev = self._policy_temp_eval(snap)
+        if tev is None:
+            return 0
+        # Prefer real board when present for power steps; else die/proxy.
+        if tev.eff_board_c > 0 and tev.board_c > 0:
+            return tev.eff_board_c
+        if tev.eff_board_c > tev.eff_die_c:
+            return tev.eff_board_c
+        return tev.eff_die_c or tev.eff_board_c
+
     def _policy_snap(self, snap: GpuSnapshot | None) -> GpuSnapshot | None:
-        """Snapshot with temperature_c replaced by policy control temp."""
+        """Snapshot for power adjust: temperature_c = policy control temp."""
         if snap is None:
             return None
         eff = self._policy_temp_c(snap)
@@ -486,14 +532,16 @@ class Supervisor:
             return snap
         src = snap.temp_source
         if eff > snap.temperature_c:
-            src = f"{src}+hidiff"
+            src = f"{src}+policy"
         return replace(snap, temperature_c=eff, temp_source=src)
 
     def _gpu_temp_abort_check(self) -> bool:
         snap = self.gpu.snapshot()
         if snap is None:
             return False
-        return self._policy_temp_c(snap) >= self.settings.max_gpu_temp_c
+        self._configure_guard_temp_context()
+        tev = self._policy_temp_eval(snap)
+        return bool(tev and tev.abort)
 
     def _gpu_paused_for_cooldown(self) -> bool:
         return self.is_gpu and time.time() < self._cooldown_until
@@ -1125,7 +1173,8 @@ class Supervisor:
         self._log("info", f"QUEUED {kind} ({reason}) — will retry when {retry_when}")
 
     def _apply_gpu_safety(self, snap) -> bool:
-        action = self.guard.evaluate(self._policy_snap(snap))
+        self._configure_guard_temp_context()
+        action = self.guard.evaluate(snap)
         if action.level == "warn":
             now = time.time()
             if (
@@ -1335,49 +1384,64 @@ class Supervisor:
                     last_net_check = now
 
                 if now - last_power_tune >= self.settings.sample_interval_s:
+                    self._configure_guard_temp_context()
+                    tev = self._policy_temp_eval(snap)
                     policy_snap = self._policy_snap(snap)
-                    policy_temp = (
-                        policy_snap.temperature_c if policy_snap is not None else 0
-                    )
                     if self._power_booster is not None:
                         self._power_booster.adjust(policy_snap)
                     if (
                         self.is_cuda_native
                         and snap is not None
-                        and hasattr(self.backend, "update_thermal_batch_from_temp")
+                        and tev is not None
+                        and hasattr(self.backend, "set_thermal_batch_scale")
                     ):
                         old_scale = getattr(self.backend, "thermal_batch_scale", 1.0)
-                        new_scale = self.backend.update_thermal_batch_from_temp(
-                            policy_temp
-                        )
+                        if self.settings.gpu_thermal_batch_enabled:
+                            new_scale = self.backend.set_thermal_batch_scale(
+                                tev.batch_scale
+                            )
+                        else:
+                            new_scale = self.backend.set_thermal_batch_scale(1.0)
                         if abs(new_scale - old_scale) >= 0.005:
-                            sensor = snap.temp_summary() if hasattr(snap, "temp_summary") else f"{snap.temperature_c}C"
+                            sensor = (
+                                snap.temp_summary()
+                                if hasattr(snap, "temp_summary")
+                                else f"{snap.temperature_c}C"
+                            )
                             self._log(
                                 "info",
                                 f"Thermal batch scale {old_scale:.2f} -> {new_scale:.2f} "
-                                f"(policy_temp {policy_temp}C, {sensor}, batch="
+                                f"({tev.summary}, {sensor}, batch="
                                 f"{getattr(self.backend, 'batch_size', 0)})",
                             )
-                        if hasattr(self.backend, "update_thermal_lanes_from_temp"):
+                        if (
+                            self.settings.gpu_thermal_lane_enabled
+                            and hasattr(self.backend, "update_thermal_lanes_from_temp")
+                        ):
+                            # Drive lane cap from dual-limit eval (board-aware).
                             old_lanes = int(getattr(self.backend, "active_lanes", 1))
-                            new_lanes, lane_changed = (
-                                self.backend.update_thermal_lanes_from_temp(
-                                    policy_temp
+                            if tev.lane_cap_from_temp is not None:
+                                self.backend._thermal_lane_cap = tev.lane_cap_from_temp
+                                changed = self.backend._reapply_live_caps()
+                                new_lanes = int(self.backend.active_lanes)
+                            else:
+                                new_lanes, changed = (
+                                    self.backend.update_thermal_lanes_from_temp(
+                                        tev.eff_board_c or tev.eff_die_c
+                                    )
                                 )
-                            )
-                            if lane_changed and new_lanes != old_lanes:
+                            if changed and new_lanes != old_lanes:
                                 self._log(
                                     "info",
                                     f"Thermal lanes {old_lanes} -> {new_lanes} "
-                                    f"(policy_temp {policy_temp}C, "
-                                    f"batch={getattr(self.backend, 'batch_size', 0)})",
+                                    f"({tev.summary}, batch="
+                                    f"{getattr(self.backend, 'batch_size', 0)})",
                                 )
                                 if self.dashboard:
                                     self._ui_event(
                                         "INFO",
                                         "GPU",
-                                        f"thermal lanes {old_lanes}->{new_lanes} "
-                                        f"@ pol {policy_temp}C",
+                                        f"thermal lanes {old_lanes}->{new_lanes}",
                                     )
                         if self.dashboard and hasattr(self.backend, "batch_size"):
                             self.dashboard.set_cuda_batch(

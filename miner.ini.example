@@ -36,9 +36,12 @@ target_vram_mib = 24576
 headroom_mib = 0
 emergency_vram_mib = 0
 min_headroom_mib = 0
-# Tighter board safety for difficulty spikes (was 72/75)
-max_gpu_temp_c = 72
-warn_gpu_temp_c = 68
+# Die (GPU) temps — tighter than board
+max_gpu_temp_c = 84
+warn_gpu_temp_c = 78
+# Board / PCB — Tony measured ~88C sustained week; hard stop 90
+max_board_temp_c = 90
+warn_board_temp_c = 85
 gpu_cooldown_s = 60
 gpu_power_boost_enabled = true
 # Power target band: eases toward min as difficulty rises above reference
@@ -56,8 +59,7 @@ gpu_thermal_lane_min = 1
 # As difficulty climbs toward reference, bias lanes down early
 gpu_difficulty_lane_bias = true
 gpu_difficulty_lane_full_pack_ratio = 0.35
-# High-diff board-heat proxy: at ~1.5–1.9× reference, treat temp as hotter
-# so derate triggers even if only die NVML is available (board often runs hotter).
+# High-diff board proxy only when board sensor is missing (die looks cool).
 gpu_high_diff_temp_enabled = true
 gpu_high_diff_temp_start_ratio = 1.5
 gpu_high_diff_temp_full_ratio = 1.9
