@@ -34,15 +34,14 @@ class TimelapseHourWindowTests(unittest.TestCase):
                 )
 
             spark = tl.sparkline(width=48, now=now)
-            spark = tl.sparkline(width=48, now=now)
-                        self.assertEqual(len(spark), 48)
-                        filled = [ch for ch in spark if ch != "·"]
-                        self.assertGreaterEqual(len(filled), 3)
-                        # Glyphs should vary with H/s (absolute scale from 0 → peak).
-                        self.assertGreater(len(set(filled)), 1)
-                        avg = tl.average_hps(now=now)
-                        self.assertGreater(avg, 100_000)
-                        self.assertLess(avg, 500_000)
+            self.assertEqual(len(spark), 48)
+            filled = [ch for ch in spark if ch != "·"]
+            self.assertGreaterEqual(len(filled), 3)
+            # Glyphs should vary with H/s (absolute scale from 0 → peak).
+            self.assertGreater(len(set(filled)), 1)
+            avg = tl.average_hps(now=now)
+            self.assertGreater(avg, 100_000)
+            self.assertLess(avg, 500_000)
 
     def test_sparkline_no_false_plateau_from_carry(self) -> None:
         """One sample must not paint the whole hour as a solid bar."""
