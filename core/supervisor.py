@@ -74,9 +74,16 @@ class Supervisor:
             )
             self.dashboard.set_server_uptime(self.server_uptime)
         if self.dashboard and settings.address:
+            rpc_urls = [
+                u.strip()
+                for u in str(getattr(settings, "wallet_rpc_url", "") or "").split(",")
+                if u.strip()
+            ]
             self.wallet_balances = WalletBalanceTracker(
                 settings.address,
                 settings.log_path.parent / "balance_history.json",
+                rpc_url=rpc_urls[0] if rpc_urls else "https://xenblocks.io:5556",
+                rpc_urls=rpc_urls or None,
             )
             self.dashboard.set_wallet_balances(self.wallet_balances)
         if self.dashboard:

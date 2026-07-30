@@ -23,7 +23,13 @@ from monitoring.periods import (
 XUNI_CONTRACT = "0x999999cf1046e68e36e1aa2e0e07105eddd00002"
 XBLK_CONTRACT = "0x999999cf1046e68e36e1aa2e0e07105eddd00001"
 WEI_PER_TOKEN = 10**18
-DEFAULT_RPC_TIMEOUT_S = 12.0
+DEFAULT_RPC_TIMEOUT_S = 15.0
+# Primary + fallbacks. eth_call (ERC-20) is flakier than eth_getBalance on X1.
+DEFAULT_RPC_URLS = (
+    "https://xenblocks.io:5556",
+    "https://xenblocks.io:5555",
+)
+DEFAULT_RPC_URL = DEFAULT_RPC_URLS[0]
 
 
 @dataclass(frozen=True)
@@ -56,27 +62,101 @@ class BalanceChangeView:
     status: str
 
 
-def _rpc_call(rpc_url: str, method: str, params: list, timeout_s: float) -> object:
-    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": 1}).encode()
-    req = urllib.request.Request(
-        rpc_url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        body = json.loads(resp.read().decode("utf-8", errors="replace"))
-    if "error" in body:
-        raise RuntimeError(str(body["error"]))
-    result = body.get("result")
-    if result is None:
-        raise RuntimeError(f"rpc returned no result for {method}")
-    return result
+def _normalize_rpc_urls(rpc_url: str | None, rpc_urls: list[str] | tuple[str, ...] | None) -> list[str]:
+    urls: list[str] = []
+    if rpc_urls:
+        urls.extend(str(u).strip() for u in rpc_urls if str(u).strip())
+    if rpc_url and str(rpc_url).strip():
+        urls.insert(0, str(rpc_url).strip())
+    if not urls:
+        urls = list(DEFAULT_RPC_URLS)
+    # de-dupe, keep order
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    # Always append defaults as last-resort fallbacks
+    for u in DEFAULT_RPC_URLS:
+        if u not in seen:
+            out.append(u)
+    return out
 
 
-def _erc20_balance(rpc_url: str, contract: str, wallet: str, timeout_s: float) -> float:
+def _rpc_call(
+    rpc_url: str,
+    method: str,
+    params: list,
+    timeout_s: float,
+    *,
+    retries: int = 2,
+) -> object:
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
+    ).encode()
+    last_exc: BaseException | None = None
+    attempts = max(1, int(retries))
+    for attempt in range(attempts):
+        req = urllib.request.Request(
+            rpc_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "xnminer-lowdif/wallet",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                body = json.loads(resp.read().decode("utf-8", errors="replace"))
+            if "error" in body:
+                raise RuntimeError(str(body["error"]))
+            result = body.get("result")
+            if result is None:
+                raise RuntimeError(f"rpc returned no result for {method}")
+            return result
+        except (urllib.error.URLError, TimeoutError, TimeoutError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.35 * (attempt + 1))
+            continue
+    assert last_exc is not None
+    raise last_exc
+
+
+def _rpc_call_any(
+    rpc_urls: list[str],
+    method: str,
+    params: list,
+    timeout_s: float,
+) -> object:
+    """Try each RPC endpoint until one answers."""
+    errors: list[str] = []
+    for url in rpc_urls:
+        try:
+            return _rpc_call(url, method, params, timeout_s, retries=2)
+        except Exception as exc:  # noqa: BLE001 — collect and try next
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError("; ".join(errors) if errors else "no rpc urls")
+
+
+def _erc20_balance(
+    rpc_urls: list[str],
+    contract: str,
+    wallet: str,
+    timeout_s: float,
+) -> float:
     data = "0x70a08231" + wallet[2:].lower().rjust(64, "0")
-    raw = _rpc_call(rpc_url, "eth_call", [{"to": contract, "data": data}, "latest"], timeout_s)
+    # ERC-20 calls are slower / flakier — give them the full timeout budget.
+    raw = _rpc_call_any(
+        rpc_urls,
+        "eth_call",
+        [{"to": contract, "data": data}, "latest"],
+        max(timeout_s, 18.0),
+    )
     return int(raw, 16) / WEI_PER_TOKEN
 
 
@@ -85,56 +165,80 @@ def _fetch_token(
     fetch: Callable[[], float],
     *,
     fallback: float | None,
+    allow_zero_on_error: bool = True,
 ) -> tuple[float | None, str | None]:
+    """
+    Returns (value, note).
+
+    note is:
+      - None on success
+      - token label when fallback/cache used
+      - "LABEL: error" when failed and no fallback (value may still be 0.0)
+    """
     try:
         return fetch(), None
-    except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as exc:
+    except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError, OSError) as exc:
         if fallback is not None:
             return fallback, label
+        if allow_zero_on_error:
+            return 0.0, f"{label}: {exc}"
         return None, f"{label}: {exc}"
 
 
 def fetch_wallet_balances(
     wallet: str,
     *,
-    rpc_url: str = "https://xenblocks.io:5556",
+    rpc_url: str = DEFAULT_RPC_URL,
+    rpc_urls: list[str] | tuple[str, ...] | None = None,
     timeout_s: float = DEFAULT_RPC_TIMEOUT_S,
     fallback: TokenBalances | None = None,
 ) -> tuple[TokenBalances, list[str]]:
-    """Fetch balances per token; use fallback values for tokens that time out."""
+    """
+    Fetch balances per token.
+
+    - Retries and multi-endpoint fallback for flaky X1 RPC
+    - Uses cached fallback values when a token times out
+    - On cold start (no cache), still returns zeros for failed tokens instead of
+      blanking the whole panel as \"RPC unavailable\"
+    """
+    urls = _normalize_rpc_urls(rpc_url, rpc_urls)
     fb = fallback
     cached_tokens: list[str] = []
+    failed_notes: list[str] = []
 
     xnm, err = _fetch_token(
         "XNM",
-        lambda: int(_rpc_call(rpc_url, "eth_getBalance", [wallet, "latest"], timeout_s), 16)
+        lambda: int(
+            _rpc_call_any(urls, "eth_getBalance", [wallet, "latest"], timeout_s),
+            16,
+        )
         / WEI_PER_TOKEN,
         fallback=fb.xnm if fb else None,
     )
     if err == "XNM":
         cached_tokens.append("XNM")
     elif err:
-        raise RuntimeError(err)
+        failed_notes.append(err)
 
     xuni, err = _fetch_token(
         "XUNI",
-        lambda: _erc20_balance(rpc_url, XUNI_CONTRACT, wallet, timeout_s),
+        lambda: _erc20_balance(urls, XUNI_CONTRACT, wallet, timeout_s),
         fallback=fb.xuni if fb else None,
     )
     if err == "XUNI":
         cached_tokens.append("XUNI")
     elif err:
-        raise RuntimeError(err)
+        failed_notes.append(err)
 
     xblk, err = _fetch_token(
         "XBLK",
-        lambda: _erc20_balance(rpc_url, XBLK_CONTRACT, wallet, timeout_s),
+        lambda: _erc20_balance(urls, XBLK_CONTRACT, wallet, timeout_s),
         fallback=fb.xblk if fb else None,
     )
     if err == "XBLK":
         cached_tokens.append("XBLK")
     elif err:
-        raise RuntimeError(err)
+        failed_notes.append(err)
 
     if xnm is None or xuni is None or xblk is None:
         missing = [
@@ -142,7 +246,20 @@ def fetch_wallet_balances(
             for label, value in (("XNM", xnm), ("XUNI", xuni), ("XBLK", xblk))
             if value is None
         ]
-        raise RuntimeError(f"balance fetch failed for {', '.join(missing)}")
+        raise RuntimeError(
+            f"balance fetch failed for {', '.join(missing)}"
+            + (f" ({'; '.join(failed_notes)})" if failed_notes else "")
+        )
+
+    # If every token hard-failed with no cache, surface as RPC error.
+    if len(failed_notes) >= 3 and not cached_tokens and fb is None:
+        raise RuntimeError("; ".join(failed_notes))
+
+    # Soft failures (zeros) → status markers like "XUNI?"
+    for note in failed_notes:
+        label = note.split(":", 1)[0].strip()
+        if label and label not in cached_tokens:
+            cached_tokens.append(f"{label}?")
 
     return TokenBalances(xnm=xnm, xuni=xuni, xblk=xblk), cached_tokens
 
@@ -180,18 +297,23 @@ class WalletBalanceTracker:
         wallet: str,
         history_path: Path,
         *,
-        rpc_url: str = "https://xenblocks.io:5556",
+        rpc_url: str = DEFAULT_RPC_URL,
+        rpc_urls: list[str] | tuple[str, ...] | None = None,
         refresh_interval_s: float = 300.0,
+        timeout_s: float = DEFAULT_RPC_TIMEOUT_S,
     ) -> None:
         self.wallet = wallet
         self.history_path = history_path
         self.rpc_url = rpc_url
+        self.rpc_urls = list(rpc_urls) if rpc_urls else list(DEFAULT_RPC_URLS)
         self.refresh_interval_s = refresh_interval_s
+        self.timeout_s = timeout_s
         self._lock = threading.Lock()
         self._refreshing = False
         self._current: TokenBalances | None = None
         self._updated_at: float | None = None
         self._last_attempt_at: float | None = None
+        self._last_error: str | None = None
         self._status = "waiting"
         self._daily_refresh_date: str | None = None
         self._history: dict[str, dict] = {}
@@ -300,10 +422,13 @@ class WalletBalanceTracker:
                 balances, cached_tokens = fetch_wallet_balances(
                     self.wallet,
                     rpc_url=self.rpc_url,
+                    rpc_urls=self.rpc_urls,
+                    timeout_s=self.timeout_s,
                     fallback=fallback,
                 )
-            except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as exc:
+            except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError, OSError) as exc:
                 with self._lock:
+                    self._last_error = str(exc)[:160]
                     if self._current is None:
                         self._status = "rpc error"
                     else:
@@ -313,13 +438,23 @@ class WalletBalanceTracker:
 
             status = "ok"
             if cached_tokens:
-                status = f"partial ({', '.join(cached_tokens)} cached)"
+                # Distinguish cache hit vs soft-fail zeros (LABEL?)
+                soft = [t for t in cached_tokens if t.endswith("?")]
+                hard = [t for t in cached_tokens if not t.endswith("?")]
+                parts: list[str] = []
+                if hard:
+                    parts.append(f"{', '.join(hard)} cached")
+                if soft:
+                    parts.append(f"{', '.join(t.rstrip('?') for t in soft)} rpc slow")
+                status = "partial (" + "; ".join(parts) + ")"
 
             with self._lock:
                 self._current = balances
                 self._updated_at = time.time()
                 self._status = status
+                self._last_error = None
                 self._refreshing = False
+            # Only snapshot clean full fetches
             if not cached_tokens:
                 self._record_snapshot(balances)
 

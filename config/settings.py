@@ -77,6 +77,8 @@ class Settings:
     stats_interval_s: int
     timelapse_sample_s: int
     dashboard_enabled: bool
+    # X1 chain RPC for wallet balance panel (comma-separated OK)
+    wallet_rpc_url: str
     woodyminer_enabled: bool
     woodyminer_upload_url: str
     woodyminer_upload_period_s: int
@@ -275,6 +277,12 @@ def load_settings(ini_path: Path | None = None) -> Settings:
         stats_interval_s=int(mon.get("stats_interval_s", "10")),
         timelapse_sample_s=int(mon.get("timelapse_sample_s", "30")),
         dashboard_enabled=mon.getboolean("dashboard_enabled", fallback=True),
+        wallet_rpc_url=str(
+            mon.get(
+                "wallet_rpc_url",
+                "https://xenblocks.io:5556,https://xenblocks.io:5555",
+            )
+        ).strip(),
         woodyminer_enabled=mon.getboolean("woodyminer_enabled", fallback=True),
         woodyminer_upload_url=mon.get(
             "woodyminer_upload_url", "https://woodyminer.com/api/stat/upload"

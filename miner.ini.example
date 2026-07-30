@@ -91,6 +91,8 @@ stats_interval_s = 4
 timelapse_sample_s = 30
 temp_watch_path = data/temp_watch.log
 dashboard_enabled = true
+# X1 RPC for wallet balance panel (comma-separated fallbacks). eth_call can be slow.
+wallet_rpc_url = https://xenblocks.io:5556,https://xenblocks.io:5555
 woodyminer_enabled = true
 woodyminer_upload_url = https://woodyminer.com/api/stat/upload
 woodyminer_upload_period_s = 60

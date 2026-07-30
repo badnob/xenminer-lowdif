@@ -262,7 +262,7 @@ class MinerDashboard:
             if status == "waiting":
                 status = "fetching..."
             elif status == "rpc error":
-                status = "RPC unavailable"
+                status = "RPC slow/unavailable (retrying)"
             tbl.add_row(
                 Text("", style="dim"),
                 Text(status, style="dim italic"),
