@@ -1,3 +1,10 @@
+## [3.2.3] - Woodyminer wallet totals
+- Pull XNM / XUNI / XBLK balances from RPC (wallet_balances)
+- Submit to woodyminer.com payload as xnm/xuni/xblk + totalXNM/totalXUNI/totalXBLK
+- Enables https://woodyminer.com/stat/total/ and sub-categories (hashrate, by blocks, by superblocks, by machines)
+- On-chain holdings persist across restarts (no longer zero)
+- Wire automatically when woodyminer_enabled=true and wallet RPC configured
+
 ## 3.2.2 — 2026-07-30
 
 - Startup robustness: power boost moved after CUDA alloc (heavy work first)

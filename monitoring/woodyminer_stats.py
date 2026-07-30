@@ -14,6 +14,7 @@ from typing import Callable
 from core.models import GpuSnapshot, MiningStats
 from core.version import USER_AGENT, __version__ as MINER_VERSION
 from monitoring.logger import SessionLogger
+from monitoring.wallet_balances import TokenBalances
 
 DEFAULT_UPLOAD_URL = "https://woodyminer.com/api/stat/upload"
 UPLOAD_USER_AGENT = USER_AGENT
@@ -38,6 +39,7 @@ def build_stat_payload(
     uptime_s: int,
     version: str = MINER_VERSION,
     custom_name: str = "",
+    balances: TokenBalances | None = None,
 ) -> dict:
     """Build JSON body matching native StatReporter::getStatData()."""
     total_hashrate = stats.hps_ema
@@ -83,6 +85,18 @@ def build_stat_payload(
     }
     if custom_name:
         payload["customName"] = custom_name
+
+    # Wallet holdings from RPC (XNM native + XUNI/XBLK ERC20) so /stat/total/
+    # and sub-pages (hashrate / by blocks / by superblocks / by machines)
+    # show persistent totals instead of resetting to zero on restart.
+    if balances is not None:
+        payload["xnm"] = balances.xnm
+        payload["xuni"] = balances.xuni
+        payload["xblk"] = balances.xblk
+        payload["totalXNM"] = balances.xnm
+        payload["totalXUNI"] = balances.xuni
+        payload["totalXBLK"] = balances.xblk
+
     return payload
 
 
@@ -104,6 +118,7 @@ class WoodyminerStatsUploader:
         logger: SessionLogger,
         version: str = MINER_VERSION,
         timeout_s: float = 3.0,
+        get_balances: Callable[[], TokenBalances | None] | None = None,
     ) -> None:
         self.upload_url = upload_url
         self.upload_period_s = max(15, upload_period_s)
@@ -117,6 +132,7 @@ class WoodyminerStatsUploader:
         self.logger = logger
         self.version = version
         self.timeout_s = timeout_s
+        self.get_balances = get_balances
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -142,6 +158,12 @@ class WoodyminerStatsUploader:
 
     def build_payload(self) -> dict:
         uptime_s = max(0, int(time.time() - self.session_started_at))
+        balances = None
+        if self.get_balances:
+            try:
+                balances = self.get_balances()
+            except Exception:
+                balances = None
         return build_stat_payload(
             machine_id=self.machine_id,
             miner_address=self.miner_address,
@@ -151,6 +173,7 @@ class WoodyminerStatsUploader:
             uptime_s=uptime_s,
             version=self.version,
             custom_name=self.custom_name,
+            balances=balances,
         )
 
     def upload_once(self) -> tuple[int, str]:

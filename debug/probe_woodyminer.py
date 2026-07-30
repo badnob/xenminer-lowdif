@@ -19,6 +19,8 @@ from monitoring.woodyminer_stats import build_stat_payload, derive_machine_id
 def try_upload(user_agent: str | None) -> None:
     settings = load_settings()
     stats = MiningStats(hps_ema=100000.0, total_hashes=1000, accepted_live_xnm=1)
+    from monitoring.wallet_balances import TokenBalances
+    balances = TokenBalances(xnm=1234.56, xuni=78.9, xblk=5.0)
     gpu = GpuSnapshot(0, "RTX", 24576, 12000, 12576, 90, 200.0, 60)
     payload = build_stat_payload(
         machine_id=derive_machine_id(0),
@@ -29,6 +31,7 @@ def try_upload(user_agent: str | None) -> None:
         uptime_s=120,
         custom_name=settings.woodyminer_custom_name,
         version="1.4.0",
+        balances=balances,
     )
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}

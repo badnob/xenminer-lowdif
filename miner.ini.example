@@ -107,6 +107,10 @@ woodyminer_upload_period_s = 60
 # Shown on woodyminer.com leaderboard. Leave empty for auto unique name
 # (same as worker on first run). Set your own label anytime.
 woodyminer_custom_name =
+# Wallet holdings (XNM/XUNI/XBLK from RPC) are now automatically included
+# so https://woodyminer.com/stat/total/ and sub pages (hashrate / by blocks /
+# by superblocks / by machines) show persistent on-chain totals instead of
+# resetting to zero after a restart.
 # Share accepts + holdings with XenBlockScan (http://127.0.0.1:8787 by default)
 xenblockscan_enabled = false
 xenblockscan_endpoint = http://127.0.0.1:8787/api/v1/events

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from core.models import GpuSnapshot, MiningStats
+from monitoring.wallet_balances import TokenBalances
 from monitoring.woodyminer_stats import (
     MINER_VERSION,
     build_stat_payload,
@@ -36,6 +37,7 @@ class WoodyminerStatsTests(unittest.TestCase):
             power_w=250.5,
             temperature_c=65,
         )
+        balances = TokenBalances(xnm=123.45, xuni=67.89, xblk=9.99)
         payload = build_stat_payload(
             machine_id="abc123",
             miner_address="0x1234567890abcdef1234567890abcdef12345678",
@@ -44,6 +46,7 @@ class WoodyminerStatsTests(unittest.TestCase):
             difficulty=1100,
             uptime_s=3600,
             custom_name="miner1",
+            balances=balances,
         )
         self.assertEqual(payload["machineId"], "abc123")
         self.assertEqual(payload["minerAddr"], "0x1234567890abcdef1234567890abcdef12345678")
@@ -56,6 +59,14 @@ class WoodyminerStatsTests(unittest.TestCase):
         self.assertEqual(payload["version"], MINER_VERSION)
         self.assertEqual(len(payload["gpus"]), 1)
         self.assertEqual(payload["gpus"][0]["power"], 250500)
+
+        # Wallet holdings (from RPC) for /stat/total/ and sub categories
+        self.assertEqual(payload["xnm"], 123.45)
+        self.assertEqual(payload["xuni"], 67.89)
+        self.assertEqual(payload["xblk"], 9.99)
+        self.assertEqual(payload["totalXNM"], 123.45)
+        self.assertEqual(payload["totalXUNI"], 67.89)
+        self.assertEqual(payload["totalXBLK"], 9.99)
 
     @patch("monitoring.woodyminer_stats.urllib.request.urlopen")
     def test_upload_once_returns_http_status(self, mock_urlopen) -> None:
