@@ -1282,8 +1282,6 @@ class Supervisor:
         if self.dashboard:
             self.dashboard.start()
             self.dashboard.set_timelapse(self.timelapse)
-            if self.wallet_balances is not None:
-                self.wallet_balances.refresh_on_launch()
             self.dashboard.set_status("Starting...")
             self.dashboard.update(
                 self.metrics.stats,
@@ -1291,6 +1289,9 @@ class Supervisor:
                 pending_by_type=self.store.pending_by_type(resubmission=False),
                 resubmission_by_type=self.store.pending_by_type(resubmission=True),
             )
+            # Wallet RPC is slow/flaky — never block paint; background only.
+            if self.wallet_balances is not None:
+                self.wallet_balances.refresh_on_launch()
 
         submit_workers = submit_worker_count(self.settings.submit_cpu_fraction)
         self._log(
@@ -1301,11 +1302,11 @@ class Supervisor:
         )
         self._log("info", f"=== {banner_line()} START ===")
         if self.dashboard:
-            self.dashboard.set_status("Connecting to server...")
+            self.dashboard.set_status("Connecting to pool...")
 
-        net = self._net_poller.start(
-            initial_timeout_s=float(self.settings.connection_timeout_s),
-        )
+        # Keep first connect snappy so the UI is not stuck on Connecting.
+        initial_timeout = min(8.0, float(self.settings.connection_timeout_s))
+        net = self._net_poller.start(initial_timeout_s=initial_timeout)
         if net.difficulty is not None:
             self._network_difficulty = self._apply_network_difficulty(net.difficulty)
             self._network_ok = True
@@ -1316,6 +1317,7 @@ class Supervisor:
                 f"from {self.settings.difficulty_url} "
                 f"— submits must match this m= (cannot spoof easier)",
             )
+            # Store only; CUDA replan happens inside backend.start() / later.
             if self.is_cuda_native and hasattr(self.backend, "set_difficulty"):
                 self.backend.set_difficulty(self._network_difficulty)
             if self.dashboard:
@@ -1326,7 +1328,7 @@ class Supervisor:
             self._last_network_log_ok = False
             if self.is_cuda_native and hasattr(self.backend, "set_difficulty"):
                 self.backend.set_difficulty(self._network_difficulty)
-            port_ok = check_port80(self.settings.base_url, timeout_s=3.0)
+            port_ok = check_port80(self.settings.base_url, timeout_s=2.0)
             self._log(
                 "warn",
                 f"Server unreachable ({net.error or 'no response'}) - "
@@ -1351,6 +1353,8 @@ class Supervisor:
             self._power_booster.apply()
 
         if time.time() >= self._cooldown_until:
+            if self.dashboard:
+                self.dashboard.set_status("Loading CUDA (VRAM plan / first batch)...")
             self.backend.start()
             if self.is_cuda_native and hasattr(self.backend, "batch_size"):
                 plan = getattr(self.backend, "vram_plan", None)
@@ -1367,12 +1371,13 @@ class Supervisor:
                     )
                 if self.dashboard:
                     self.dashboard.set_cuda_batch(
-                    self.backend.batch_size,
-                    self.backend.active_lanes,
-                )
+                        self.backend.batch_size,
+                        self.backend.active_lanes,
+                    )
 
         if self.dashboard:
             self.dashboard.set_status("Mining")
+            self._ui_refresh()
 
         self._running = True
         started = time.time()

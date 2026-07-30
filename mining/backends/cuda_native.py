@@ -649,17 +649,25 @@ class CudaNativeBackend(MinerBackend):
         return True
 
     def set_difficulty(self, difficulty: int) -> None:
-        if difficulty == self._difficulty:
+        """
+        Update Argon2 memory cost / network difficulty.
+
+        Safe before start(): only stores the value. Full VRAM replan runs after
+        the engine is up (and on later network changes).
+        """
+        if difficulty == self._difficulty and self._started:
             return
-        self._difficulty = difficulty
+        self._difficulty = max(1, int(difficulty))
+        if not self._started:
+            return
         try:
             info = self._engine.device_info(0)
-            base = self._plan_from_device(info, difficulty=difficulty)
+            base = self._plan_from_device(info, difficulty=self._difficulty)
             # Soft clamp — never crash mid-mine on a tight free-VRAM reading.
             conc = base.effective_concurrent_vram_lanes()
             per_lane_budget = max(1, base.budget_bytes // max(1, conc))
             dll_free_arg = per_lane_budget + CUDA_ENGINE_RESERVE_BYTES
-            memory_limit = memory_limited_batch_size(dll_free_arg, difficulty)
+            memory_limit = memory_limited_batch_size(dll_free_arg, self._difficulty)
             if self.settings.cuda_max_batch_size > 0 and memory_limit > 0:
                 memory_limit = min(memory_limit, self.settings.cuda_max_batch_size)
             if memory_limit > 0 and base.batch_per_lane > memory_limit:
@@ -676,7 +684,7 @@ class CudaNativeBackend(MinerBackend):
         except Exception:
             # Keep hashing at the new difficulty with previous batch/lanes.
             if self._base_vram_plan is None:
-                raise
+                return
             return
 
     def _run_lane(self, lane: int) -> CudaBatchResult:

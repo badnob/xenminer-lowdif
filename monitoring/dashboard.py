@@ -79,7 +79,7 @@ class MinerDashboard:
         self._wallet_balances: WalletBalanceTracker | None = None
         self._server_uptime: ServerUptimeTracker | None = None
         self._last_refresh_at = 0.0
-        self._min_refresh_s = 0.5
+        self._min_refresh_s = 0.25
         self._last_size: tuple[int, int] | None = None
 
     def start(self) -> None:
@@ -88,15 +88,19 @@ class MinerDashboard:
         self._live = Live(
             self.render(),
             console=self.console,
-            refresh_per_second=2,
+            refresh_per_second=4,
             transient=True,
             screen=True,
             redirect_stderr=False,
             redirect_stdout=False,
             vertical_overflow="crop",
+            auto_refresh=True,
         )
         self._last_size = self._console_size()
         self._live.start()
+        # Immediate paint so Windows terminals show the first frame before
+        # long CUDA / network work blocks the main thread.
+        self._refresh(force=True)
 
     def stop(self) -> None:
         if self._live:
@@ -179,8 +183,12 @@ class MinerDashboard:
         if not force and now - self._last_refresh_at < self._min_refresh_s:
             return
         self._last_refresh_at = now
-        # refresh=True on size changes so the alternate buffer repaints immediately.
-        self._live.update(self.render(), refresh=force)
+        # Always request a paint — Windows alt-buffer + long CUDA init otherwise
+        # leaves a stale "Connecting..." frame until the main thread unblocks.
+        try:
+            self._live.update(self.render(), refresh=True)
+        except Exception:
+            pass
 
     def _styled_count(self, value: int | float, style: str) -> Text:
         if isinstance(value, float) and abs(value - round(value)) >= 0.001:

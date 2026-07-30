@@ -23,7 +23,7 @@ from monitoring.periods import (
 XUNI_CONTRACT = "0x999999cf1046e68e36e1aa2e0e07105eddd00002"
 XBLK_CONTRACT = "0x999999cf1046e68e36e1aa2e0e07105eddd00001"
 WEI_PER_TOKEN = 10**18
-DEFAULT_RPC_TIMEOUT_S = 15.0
+DEFAULT_RPC_TIMEOUT_S = 8.0
 # Primary + fallbacks. eth_call (ERC-20) is flakier than eth_getBalance on X1.
 DEFAULT_RPC_URLS = (
     "https://xenblocks.io:5556",
@@ -118,10 +118,17 @@ def _rpc_call(
             if result is None:
                 raise RuntimeError(f"rpc returned no result for {method}")
             return result
-        except (urllib.error.URLError, TimeoutError, TimeoutError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
             last_exc = exc
             if attempt + 1 < attempts:
-                time.sleep(0.35 * (attempt + 1))
+                time.sleep(0.2 * (attempt + 1))
             continue
     assert last_exc is not None
     raise last_exc
@@ -137,7 +144,8 @@ def _rpc_call_any(
     errors: list[str] = []
     for url in rpc_urls:
         try:
-            return _rpc_call(url, method, params, timeout_s, retries=2)
+            # One retry per endpoint keeps launch responsive.
+            return _rpc_call(url, method, params, timeout_s, retries=1)
         except Exception as exc:  # noqa: BLE001 — collect and try next
             errors.append(f"{url}: {exc}")
     raise RuntimeError("; ".join(errors) if errors else "no rpc urls")
@@ -150,12 +158,12 @@ def _erc20_balance(
     timeout_s: float,
 ) -> float:
     data = "0x70a08231" + wallet[2:].lower().rjust(64, "0")
-    # ERC-20 calls are slower / flakier — give them the full timeout budget.
+    # ERC-20 can be slow — modest cap so UI/session is not wedged for minutes.
     raw = _rpc_call_any(
         rpc_urls,
         "eth_call",
         [{"to": contract, "data": data}, "latest"],
-        max(timeout_s, 18.0),
+        max(6.0, min(float(timeout_s), 12.0)),
     )
     return int(raw, 16) / WEI_PER_TOKEN
 
