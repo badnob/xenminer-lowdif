@@ -180,6 +180,15 @@ class Supervisor:
         self._session_started_at = 0.0
         self._woodyminer_uploader: WoodyminerStatsUploader | None = None
         if settings.woodyminer_enabled and settings.address:
+            get_balances = None
+            if self.wallet_balances is not None:
+                def _get_bal():
+                    try:
+                        v = self.wallet_balances.view()
+                        return v.current
+                    except Exception:
+                        return None
+                get_balances = _get_bal
             self._woodyminer_uploader = WoodyminerStatsUploader(
                 upload_url=settings.woodyminer_upload_url,
                 upload_period_s=settings.woodyminer_upload_period_s,
@@ -191,6 +200,7 @@ class Supervisor:
                 get_difficulty=self._mining_difficulty,
                 session_started_at=0.0,
                 logger=self.logger,
+                get_balances=get_balances,
             )
         self._xbs_last_holdings_at = 0.0
         xbs.configure(
