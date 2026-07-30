@@ -12,11 +12,11 @@ import uuid
 from typing import Callable
 
 from core.models import GpuSnapshot, MiningStats
+from core.version import USER_AGENT, __version__ as MINER_VERSION
 from monitoring.logger import SessionLogger
 
 DEFAULT_UPLOAD_URL = "https://woodyminer.com/api/stat/upload"
-MINER_VERSION = "3.0.0"
-UPLOAD_USER_AGENT = "xenblocksMiner/1.4.0"
+UPLOAD_USER_AGENT = USER_AGENT
 
 
 def derive_machine_id(device_index: int = 0) -> str:

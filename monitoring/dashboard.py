@@ -15,6 +15,7 @@ from rich.text import Text
 
 from config.settings import Settings
 from core.models import GpuSnapshot, MiningStats
+from core.version import version_string
 from monitoring.dashboard_stats import (
     accepted_tokens_by_kind,
     dashboard_rows,
@@ -451,6 +452,9 @@ class MinerDashboard:
         title_block = Table.grid(expand=True)
         title_block.add_column()
         title_block.add_row(Text("XenBlocks Miner by Tony.x1", style="bold cyan"))
+        title_block.add_row(
+            Text(f"v{version_string()}", style="dim cyan"),
+        )
         title_block.add_row(
             Text(
                 f"Wallet {wallet}  |  Backend {self.settings.backend}  |  {self._status}",

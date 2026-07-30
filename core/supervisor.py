@@ -9,6 +9,7 @@ from datetime import datetime
 from config.settings import Settings
 from core.instance_lock import InstanceLock
 from core.models import BlockHit, GpuSnapshot
+from core.version import banner_line
 from dataclasses import replace
 from debug.diagnostics import run_diagnostics
 from efficiency.cuda_lane_policy import append_lane_event, record_temp_lane_reduction
@@ -818,7 +819,7 @@ class Supervisor:
             self.dashboard.set_status("Stopped")
             self._ui_refresh(self.gpu.snapshot())
             self.dashboard.stop()
-        self._log("info", "=== XenBlocks Miner by Tony.x1 STOPPED ===")
+        self._log("info", f"=== {banner_line()} STOPPED ===")
 
     def startup_checks(self) -> bool:
         if not self.lock.acquire():
@@ -1291,7 +1292,7 @@ class Supervisor:
             f"({int(self.settings.submit_cpu_fraction * 100)}% of "
             f"{os.cpu_count() or 1} available)",
         )
-        self._log("info", "=== XenBlocks Miner by Tony.x1 START ===")
+        self._log("info", f"=== {banner_line()} START ===")
         if self.dashboard:
             self.dashboard.set_status("Connecting to server...")
 

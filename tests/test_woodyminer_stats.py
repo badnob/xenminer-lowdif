@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from core.models import GpuSnapshot, MiningStats
 from monitoring.woodyminer_stats import (
+    MINER_VERSION,
     build_stat_payload,
     derive_machine_id,
     WoodyminerStatsUploader,
@@ -52,6 +53,7 @@ class WoodyminerStatsTests(unittest.TestCase):
         self.assertEqual(payload["superBlocks"], 2)
         self.assertEqual(payload["rejectedBlocks"], 1)
         self.assertEqual(payload["customName"], "miner1")
+        self.assertEqual(payload["version"], MINER_VERSION)
         self.assertEqual(len(payload["gpus"]), 1)
         self.assertEqual(payload["gpus"][0]["power"], 250500)
 

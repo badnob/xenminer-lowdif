@@ -1,6 +1,8 @@
-# XenBlocks Miner by Tony.x1 — **low-difficulty harvest fork**
+# XenBlocks Miner by Tony.x1 — **low-difficulty harvest fork** (`v3.1.0`)
 
 Fork of [badnob/xnminer](https://github.com/badnob/xnminer) tuned for **dense multi-lane mining when network difficulty is low**, with **live thermal lane derate** so board temps stay safer when difficulty climbs.
+
+**Version:** see [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md) (single source: `core/version.py`).
 
 | Item | Windows |
 |------|---------|
