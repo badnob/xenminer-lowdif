@@ -536,15 +536,20 @@ class CudaNativeBackend(MinerBackend):
         return self._engine
 
     def _verify_batch_fits_budget(self, plan: CudaVramPlan, difficulty: int) -> None:
-        per_lane_budget = max(1, plan.budget_bytes // max(1, plan.lanes))
+        # Sequential multi-prefix: one resident buffer → full budget.
+        # Parallel: budget split across concurrent lane buffers.
+        conc = plan.effective_concurrent_vram_lanes()
+        per_lane_budget = max(1, plan.budget_bytes // max(1, conc))
         dll_free_arg = per_lane_budget + CUDA_ENGINE_RESERVE_BYTES
         memory_limit = memory_limited_batch_size(dll_free_arg, difficulty)
         if self.settings.cuda_max_batch_size > 0:
             memory_limit = min(memory_limit, self.settings.cuda_max_batch_size)
-        if plan.batch_per_lane > memory_limit:
+        if plan.batch_per_lane > memory_limit > 0:
             raise RuntimeError(
                 f"CUDA batch exceeds VRAM cap: batch={plan.batch_per_lane} "
-                f"limit={memory_limit} lane_budget={per_lane_budget // (1024 * 1024)}MiB"
+                f"limit={memory_limit} "
+                f"lane_budget={per_lane_budget // (1024 * 1024)}MiB "
+                f"conc={conc} lanes={plan.lanes}"
             )
 
     def start(self) -> None:
@@ -647,13 +652,32 @@ class CudaNativeBackend(MinerBackend):
         if difficulty == self._difficulty:
             return
         self._difficulty = difficulty
-        info = self._engine.device_info(0)
-        base = self._plan_from_device(info, difficulty=difficulty)
-        self._verify_batch_fits_budget(base, difficulty)
-        # Fresh difficulty plan; keep thermal lane cap if still warm.
-        plan = self._effective_plan(base)
-        self._apply_plan(plan, base=base)
-        self._sync_lane_engines()
+        try:
+            info = self._engine.device_info(0)
+            base = self._plan_from_device(info, difficulty=difficulty)
+            # Soft clamp — never crash mid-mine on a tight free-VRAM reading.
+            conc = base.effective_concurrent_vram_lanes()
+            per_lane_budget = max(1, base.budget_bytes // max(1, conc))
+            dll_free_arg = per_lane_budget + CUDA_ENGINE_RESERVE_BYTES
+            memory_limit = memory_limited_batch_size(dll_free_arg, difficulty)
+            if self.settings.cuda_max_batch_size > 0 and memory_limit > 0:
+                memory_limit = min(memory_limit, self.settings.cuda_max_batch_size)
+            if memory_limit > 0 and base.batch_per_lane > memory_limit:
+                from dataclasses import replace
+
+                base = replace(
+                    base,
+                    batch_per_lane=memory_limit,
+                    batch_size=memory_limit,
+                )
+            plan = self._effective_plan(base)
+            self._apply_plan(plan, base=base)
+            self._sync_lane_engines()
+        except Exception:
+            # Keep hashing at the new difficulty with previous batch/lanes.
+            if self._base_vram_plan is None:
+                raise
+            return
 
     def _run_lane(self, lane: int) -> CudaBatchResult:
         engine = self._engine_for_lane(lane)
