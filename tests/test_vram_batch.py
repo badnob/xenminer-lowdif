@@ -289,10 +289,6 @@ class VramBatchTests(unittest.TestCase):
 
         self.assertEqual(batch, memory_limited_batch_size(native_arg, 1100))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_sequential_low_dif_fills_vram_with_full_batch(self) -> None:
         """Win11 default: sequential multi-prefix must not leave VRAM idle."""
         total = 32607 * 1024 * 1024
@@ -331,3 +327,7 @@ if __name__ == "__main__":
         self.assertLessEqual(sequential.projected_used_mib, sequential.target_mib)
         self.assertTrue(sequential.fills_budget(tolerance_mib=64))
         self.assertGreater(sequential.batch_vram_mib, 15000)
+
+
+if __name__ == "__main__":
+    unittest.main()
