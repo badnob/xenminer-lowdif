@@ -421,6 +421,8 @@ class WalletBalanceTracker:
                 return
             self._refreshing = True
             self._last_attempt_at = now
+            if self._current is None and self._status in ("waiting", "rpc error"):
+                self._status = "fetching"
 
         def worker() -> None:
             fallback = None
@@ -446,7 +448,6 @@ class WalletBalanceTracker:
 
             status = "ok"
             if cached_tokens:
-                # Distinguish cache hit vs soft-fail zeros (LABEL?)
                 soft = [t for t in cached_tokens if t.endswith("?")]
                 hard = [t for t in cached_tokens if not t.endswith("?")]
                 parts: list[str] = []
@@ -462,11 +463,10 @@ class WalletBalanceTracker:
                 self._status = status
                 self._last_error = None
                 self._refreshing = False
-            # Only snapshot clean full fetches
             if not cached_tokens:
                 self._record_snapshot(balances)
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True, name="wallet-balances").start()
 
     def view(self, *, now: datetime | None = None) -> BalanceChangeView:
         now = now or datetime.now()
@@ -474,6 +474,18 @@ class WalletBalanceTracker:
             current = self._current
             updated_at = self._updated_at
             status = self._status
+            # Don't leave "waiting" forever if a refresh never ran.
+            if status == "waiting" and self._last_attempt_at is None:
+                status = "waiting"
+            elif status == "fetching" and self._refreshing:
+                status = "fetching..."
+            elif (
+                status in ("waiting", "fetching", "fetching...")
+                and self._last_attempt_at is not None
+                and time.time() - self._last_attempt_at > 45
+                and current is None
+            ):
+                status = "rpc slow/unavailable"
 
         # Day: always previous mining day (yesterday after 1am). Never reuse an
         # older week snapshot — that made "Day vs Jul 13" match the week column.

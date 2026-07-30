@@ -1306,9 +1306,23 @@ class Supervisor:
         if self.dashboard:
             self.dashboard.set_status("Connecting to pool...")
 
-        # Keep first connect snappy so the UI is not stuck on Connecting.
-        initial_timeout = min(8.0, float(self.settings.connection_timeout_s))
-        net = self._net_poller.start(initial_timeout_s=initial_timeout)
+        # Non-blocking poller — never freeze UI on xenblocks.io HTTP timeouts.
+        self._net_poller.start(
+            initial_timeout_s=min(5.0, float(self.settings.connection_timeout_s)),
+        )
+        # Brief wait only; proceed with fallback difficulty if still down.
+        wait_s = min(4.0, float(self.settings.connection_timeout_s))
+        deadline = time.time() + wait_s
+        net = self._net_poller.get_status()
+        while time.time() < deadline and net.difficulty is None:
+            if self.dashboard:
+                self.dashboard.set_status("Connecting to pool...")
+                self._ui_refresh()
+            time.sleep(0.2)
+            net = self._net_poller.get_status()
+        # Prefer wait helper result if available
+        if hasattr(self._net_poller, "wait_for_difficulty") and net.difficulty is None:
+            net = self._net_poller.wait_for_difficulty(timeout_s=0.5)
         if net.difficulty is not None:
             self._network_difficulty = self._apply_network_difficulty(net.difficulty)
             self._network_ok = True

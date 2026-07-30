@@ -89,10 +89,18 @@ def _candidate_urls(url: str) -> list[str]:
     primary = (url or "").strip()
     if primary:
         out.append(primary)
+    # Prefer http first (legacy), then https twin, then common alternates.
     if primary.startswith("http://"):
-        out.append("https://" + primary[len("http://") :])
+        host = primary[len("http://") :]
+        out.append("https://" + host)
+        # Some deployments only answer certain paths
+        if host.endswith("/difficulty"):
+            base = host[: -len("/difficulty")]
+            out.append(f"http://{base}/getdifficulty")
+            out.append(f"https://{base}/getdifficulty")
     elif primary.startswith("https://"):
-        out.append("http://" + primary[len("https://") :])
+        host = primary[len("https://") :]
+        out.append("http://" + host)
     # de-dupe preserve order
     seen: set[str] = set()
     uniq: list[str] = []

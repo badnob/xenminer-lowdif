@@ -267,10 +267,12 @@ class MinerDashboard:
 
         if view.current is None:
             status = view.status
-            if status == "waiting":
-                status = "fetching..."
+            if status in ("waiting", "fetching", "fetching..."):
+                status = "fetching balances…"
             elif status == "rpc error":
-                status = "RPC slow/unavailable (retrying)"
+                status = "RPC slow (mining OK)"
+            elif "rpc slow" in status or "unavailable" in status:
+                status = "RPC slow (mining OK)"
             tbl.add_row(
                 Text("", style="dim"),
                 Text(status, style="dim italic"),
@@ -512,10 +514,19 @@ class MinerDashboard:
         )
 
         speed = f"{stats.hps_ema:,.0f} H/s" if stats.hps_ema > 0 else "warming up..."
+        if stats.hps_ema <= 0:
+            if not self._network_ok:
+                speed = "mining offline…" if self._status == "Mining" else "starting…"
+            elif self._status.startswith("Loading CUDA"):
+                speed = "CUDA loading…"
+            elif self._status == "Mining":
+                speed = "hashrate settling…"
+            else:
+                speed = f"{self._status.lower()}…" if self._status else "starting…"
         if self._difficulty is not None:
             diff = str(self._difficulty)
             if not self._network_ok:
-                diff = f"{diff} (stale)"
+                diff = f"{diff} (fallback)"
         else:
             diff = "—"
         net = "online" if self._network_ok else "offline"
