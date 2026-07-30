@@ -846,6 +846,3 @@ class CudaNativeBackend(MinerBackend):
     def vram_plan(self) -> CudaVramPlan | None:
         return self._vram_plan
 
-    @property
-    def parallel_mode(self) -> str:
-        return self._parallel_mode
