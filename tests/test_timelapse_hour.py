@@ -3,8 +3,7 @@ import time
 import unittest
 from pathlib import Path
 
-from core.models import MiningStats
-from monitoring.timelapse import SessionTimelapse
+from monitoring.timelapse import SessionTimelapse, TimelapseSample
 
 
 class TimelapseHourWindowTests(unittest.TestCase):
@@ -21,11 +20,6 @@ class TimelapseHourWindowTests(unittest.TestCase):
             # Samples across the hour: low early, high late.
             for minutes, hps in ((50, 100_000), (30, 200_000), (10, 400_000), (0, 500_000)):
                 ts = now - minutes * 60
-                stats = MiningStats(hps_ema=hps, accepted_live_xnm=1)
-                tl._last_sample_at = 0.0
-                # Inject directly to control timestamps.
-                from monitoring.timelapse import TimelapseSample
-
                 tl._samples.append(
                     TimelapseSample(
                         elapsed_s=int(ts - tl._started),
@@ -40,12 +34,43 @@ class TimelapseHourWindowTests(unittest.TestCase):
                 )
 
             spark = tl.sparkline(width=48, now=now)
-            self.assertEqual(len(spark), 48)
-            # Left side should be lower/earlier; right side higher.
-            self.assertNotEqual(spark.strip(), "")
-            avg = tl.average_hps(now=now)
-            self.assertGreater(avg, 100_000)
-            self.assertLess(avg, 500_000)
+            spark = tl.sparkline(width=48, now=now)
+                        self.assertEqual(len(spark), 48)
+                        filled = [ch for ch in spark if ch != "·"]
+                        self.assertGreaterEqual(len(filled), 3)
+                        # Glyphs should vary with H/s (absolute scale from 0 → peak).
+                        self.assertGreater(len(set(filled)), 1)
+                        avg = tl.average_hps(now=now)
+                        self.assertGreater(avg, 100_000)
+                        self.assertLess(avg, 500_000)
+
+    def test_sparkline_no_false_plateau_from_carry(self) -> None:
+        """One sample must not paint the whole hour as a solid bar."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tl = SessionTimelapse(
+                Path(tmp) / "tl.jsonl",
+                sample_interval_s=1.0,
+                window_s=3600.0,
+            )
+            now = time.time()
+            tl._started = now - 120
+            tl._samples.append(
+                TimelapseSample(
+                    elapsed_s=100,
+                    hps=300_000,
+                    vram_mib=0,
+                    temp_c=0,
+                    pending=0,
+                    accepted=0,
+                    network_ok=True,
+                    wall_ts=now - 5,
+                )
+            )
+            spark = tl.sparkline(width=40, now=now)
+            self.assertEqual(len(spark), 40)
+            # Most of the line should be empty markers, not a solid wall.
+            filled = sum(1 for ch in spark if ch not in ("·", " "))
+            self.assertLess(filled, 12)
 
     def test_average_ignores_samples_older_than_hour(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,8 +80,6 @@ class TimelapseHourWindowTests(unittest.TestCase):
                 window_s=3600.0,
             )
             now = time.time()
-            from monitoring.timelapse import TimelapseSample
-
             tl._samples.append(
                 TimelapseSample(
                     elapsed_s=0,

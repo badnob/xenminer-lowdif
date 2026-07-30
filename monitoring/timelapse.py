@@ -33,7 +33,7 @@ class TimelapseEvent:
 
 
 class SessionTimelapse:
-    """Rolling session timeline: elapsed time, hourly H/s sparkline, milestones."""
+    """Rolling session timeline: elapsed time, H/s sparkline, milestones."""
 
     def __init__(
         self,
@@ -47,7 +47,6 @@ class SessionTimelapse:
         self.log_path = log_path
         self.sample_interval_s = max(1.0, float(sample_interval_s))
         self.window_s = max(self.sample_interval_s, float(window_s))
-        # Keep slightly more than one window so resampling has full coverage.
         if max_samples is None:
             max_samples = int(self.window_s / self.sample_interval_s) + 8
         self._started = time.time()
@@ -119,7 +118,7 @@ class SessionTimelapse:
         self._last_sample_at = now
         sample = TimelapseSample(
             elapsed_s=self.elapsed_s(),
-            hps=stats.hps_ema,
+            hps=max(0.0, float(stats.hps_ema)),
             vram_mib=gpu.used_mib if gpu else 0,
             temp_c=gpu.temperature_c if gpu else 0,
             pending=pending,
@@ -138,11 +137,17 @@ class SessionTimelapse:
     def _window_samples(self, *, now: float | None = None) -> list[TimelapseSample]:
         now = now if now is not None else time.time()
         cutoff = now - self.window_s
+        # Keep zero H/s samples so gaps stay honest (warmup / pause).
         return [
             sample
             for sample in self._samples
-            if self._sample_wall_ts(sample) >= cutoff and sample.hps > 0
+            if self._sample_wall_ts(sample) >= cutoff
         ]
+
+    def _effective_window_s(self, *, now: float) -> float:
+        """Grow with the session until a full hour of history exists."""
+        age = max(self.sample_interval_s, now - self._started)
+        return min(self.window_s, age)
 
     def _bucket_values(
         self,
@@ -151,64 +156,68 @@ class SessionTimelapse:
         width: int,
         now: float,
     ) -> list[float | None]:
-        """Map last-hour samples onto fixed-width timeline (left=oldest, right=now)."""
+        """
+        Map samples onto fixed-width timeline (left=oldest, right=now).
+
+        Empty buckets stay empty (no long carry-forward plateaus — that made
+        the chart look like a solid block or a weird step).
+        """
         if width <= 0:
             return []
+        eff_window = self._effective_window_s(now=now)
+        window_start = now - eff_window
         buckets: list[list[float]] = [[] for _ in range(width)]
-        window_start = now - self.window_s
         for sample in samples:
             ts = self._sample_wall_ts(sample)
-            if ts < window_start:
+            if ts < window_start - 1e-6:
                 continue
-            # Rightmost column is the most recent slice of the hour.
-            rel = (ts - window_start) / self.window_s
+            rel = (ts - window_start) / eff_window if eff_window > 0 else 1.0
             idx = min(width - 1, max(0, int(rel * width)))
-            buckets[idx].append(sample.hps)
+            buckets[idx].append(max(0.0, float(sample.hps)))
 
         values: list[float | None] = [None] * width
-        last: float | None = None
         for i, bucket in enumerate(buckets):
             if bucket:
-                last = sum(bucket) / len(bucket)
-                values[i] = last
-            elif last is not None:
-                # Carry forward so early empty buckets after first sample don't gap.
-                values[i] = last
+                values[i] = sum(bucket) / len(bucket)
         return values
 
     def sparkline(self, width: int = 48, *, now: float | None = None) -> str:
         now = now if now is not None else time.time()
         samples = self._window_samples(now=now)
         if not samples:
-            return " " * width
+            return "·" * max(1, width)
 
         values = self._bucket_values(samples, width=width, now=now)
         present = [v for v in values if v is not None]
         if not present:
-            return " " * width
+            return "·" * width
 
-        lo = min(present)
+        # Absolute scale from 0 → peak so the shape matches real H/s, not
+        # min–max stretch that turns noise into a full-height mess.
         hi = max(present)
-        out: list[str] = []
-        if hi <= lo:
-            for value in values:
-                out.append(_SPARK[-1] if value is not None else " ")
-            return "".join(out)
+        if hi <= 0:
+            return "".join("▁" if v is not None else "·" for v in values)
 
-        span = hi - lo
+        out: list[str] = []
+        n = len(_SPARK) - 1
         for value in values:
             if value is None:
-                out.append(" ")
+                out.append("·")
                 continue
-            idx = int((value - lo) / span * (len(_SPARK) - 1))
+            # Map 0..hi onto spark glyphs; tiny rates still show ▁.
+            idx = int(round((value / hi) * n))
+            idx = max(0, min(n, idx))
+            if value > 0 and idx == 0:
+                idx = 1
             out.append(_SPARK[idx])
         return "".join(out)
 
     def average_hps(self, *, now: float | None = None) -> float:
         samples = self._window_samples(now=now)
-        if not samples:
+        live = [s.hps for s in samples if s.hps > 0]
+        if not live:
             return 0.0
-        return sum(s.hps for s in samples) / len(samples)
+        return sum(live) / len(live)
 
     def format_uptime_split(self, network_ok: bool) -> str:
         self._track_network(network_ok)

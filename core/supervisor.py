@@ -871,8 +871,15 @@ class Supervisor:
         if status.difficulty is not None:
             raw_diff = int(status.difficulty)
             if self._network_difficulty != raw_diff:
+                prev = self._network_difficulty
                 diff = self._apply_network_difficulty(raw_diff)
                 self._network_difficulty = diff
+                if prev is None:
+                    self._log(
+                        "info",
+                        f"Network difficulty (Argon2 m=): {diff} "
+                        f"(live RPC; hash m= must match for accept)",
+                    )
                 if self.is_cuda_native and hasattr(self.backend, "set_difficulty"):
                     self.backend.set_difficulty(diff)
                     plan = getattr(self.backend, "vram_plan", None)
@@ -1295,8 +1302,12 @@ class Supervisor:
             self._network_difficulty = self._apply_network_difficulty(net.difficulty)
             self._network_ok = True
             self._last_network_log_ok = True
-            if self._network_difficulty == net.difficulty:
-                self._log("info", f"Network difficulty: {self._network_difficulty}")
+            self._log(
+                "info",
+                f"Network difficulty (Argon2 m=): {self._network_difficulty} "
+                f"from {self.settings.difficulty_url} "
+                f"— submits must match this m= (cannot spoof easier)",
+            )
             if self.is_cuda_native and hasattr(self.backend, "set_difficulty"):
                 self.backend.set_difficulty(self._network_difficulty)
             if self.dashboard:
@@ -1311,7 +1322,9 @@ class Supervisor:
             self._log(
                 "warn",
                 f"Server unreachable ({net.error or 'no response'}) - "
-                f"mining at configured difficulty {self._network_difficulty}",
+                f"FALLBACK mining at miner.ini memory_cost={self._network_difficulty} "
+                f"(not live network; accepts may hold until m= matches pool). "
+                f"port80={'up' if port_ok else 'down'}",
             )
             if self.dashboard:
                 self.dashboard.set_network(port_ok, self._network_difficulty)
