@@ -1,3 +1,15 @@
+## 3.2.2 — 2026-07-30
+
+- Startup robustness: power boost moved after CUDA alloc (heavy work first)
+- Guarded power apply and CUDA start() so one failure does not hard-crash the miner
+- Lightened “Connecting to pool…” wait loop (no full UI refresh on every tick)
+- Guarded GPU snapshot() in main loop
+- Clearer status during long CUDA first-batch alloc (“can take 15-60s on 5090”)
+- Wallet label clarified as “fetching balances (background)…” so it does not look like the whole miner is stuck
+- Non-blocking poller + fallback already in prior revs
+
+These changes target the “hanging on warming up / fetching / connecting” reports (especially when xenblocks.io is unreachable).
+
 # Changelog — xenminer-lowdif
 
 Format: keep newest first. Bump `core/version.py` + `VERSION` together.

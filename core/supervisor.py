@@ -1317,7 +1317,6 @@ class Supervisor:
         while time.time() < deadline and net.difficulty is None:
             if self.dashboard:
                 self.dashboard.set_status("Connecting to pool...")
-                self._ui_refresh()
             time.sleep(0.2)
             net = self._net_poller.get_status()
         # Prefer wait helper result if available
@@ -1365,37 +1364,45 @@ class Supervisor:
         if self.is_cuda_native and hasattr(self.backend, "set_abort_check"):
             self.backend.set_abort_check(self._gpu_temp_abort_check)
 
-        if self._power_booster is not None:
-            self._power_booster.apply()
-
         if time.time() >= self._cooldown_until:
             if self.dashboard:
-                self.dashboard.set_status("Loading CUDA (VRAM plan / first batch)...")
-            self.backend.start()
-            if self.is_cuda_native and hasattr(self.backend, "batch_size"):
-                plan = getattr(self.backend, "vram_plan", None)
-                if plan is not None:
-                    self._log("info", f"CUDA VRAM plan: {plan.summary()}")
-                else:
-                    self._log(
-                        "info",
-                        f"CUDA batch={self.backend.batch_size:,} "
-                        f"target_vram="
-                        f"{(self.vram_caps.target_mib if self.vram_caps else 0):,}MiB "
-                        f"desktop_headroom="
-                        f"{(self.vram_caps.headroom_mib if self.vram_caps else 0):,}MiB",
-                    )
-                if self.dashboard:
-                    mode = getattr(self.backend, "parallel_mode", "?")
-                    self.dashboard.set_cuda_batch(
-                        self.backend.batch_size,
-                        self.backend.active_lanes,
-                    )
-                    self._log(
-                        "info",
-                        f"CUDA mode={mode} lanes={self.backend.active_lanes} "
-                        f"batch={self.backend.batch_size:,}",
-                    )
+                self.dashboard.set_status("Loading CUDA (VRAM plan / first batch — this can take 15-60s on 5090)...")
+            try:
+                self.backend.start()
+            except Exception as exc:
+                self._log("error", f"CUDA backend.start() raised: {exc}")
+
+        # Power boost after CUDA (heavy alloc first); guard so it never hangs startup
+        if self._power_booster is not None:
+            try:
+                self._power_booster.apply()
+            except Exception as exc:
+                self._log("warn", f"Power boost skipped: {exc}")
+
+        if self.is_cuda_native and hasattr(self.backend, "batch_size"):
+            plan = getattr(self.backend, "vram_plan", None)
+            if plan is not None:
+                self._log("info", f"CUDA VRAM plan: {plan.summary()}")
+            else:
+                self._log(
+                    "info",
+                    f"CUDA batch={self.backend.batch_size:,} "
+                    f"target_vram="
+                    f"{(self.vram_caps.target_mib if self.vram_caps else 0):,}MiB "
+                    f"desktop_headroom="
+                    f"{(self.vram_caps.headroom_mib if self.vram_caps else 0):,}MiB",
+                )
+            if self.dashboard:
+                mode = getattr(self.backend, "parallel_mode", "?")
+                self.dashboard.set_cuda_batch(
+                    self.backend.batch_size,
+                    self.backend.active_lanes,
+                )
+                self._log(
+                    "info",
+                    f"CUDA mode={mode} lanes={self.backend.active_lanes} "
+                    f"batch={self.backend.batch_size:,}",
+                )
 
         if self.dashboard:
             self.dashboard.set_status("Mining")
@@ -1424,7 +1431,11 @@ class Supervisor:
                     self._graceful_shutdown("Max runtime reached")
                     break
 
-                snap = self.gpu.snapshot()
+                snap = None
+                try:
+                    snap = self.gpu.snapshot()
+                except Exception as exc:
+                    self._log("warn", f"GPU snapshot failed in loop: {exc}")
                 now = time.time()
 
                 if now - last_net_check >= float(self.settings.network_poll_interval_s):

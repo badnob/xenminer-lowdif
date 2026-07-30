@@ -5,7 +5,7 @@ from __future__ import annotations
 # Semver: MAJOR.MINOR.PATCH
 # - MINOR: user-visible features (lowdif pack, dual temps, VRAM soft derate, …)
 # - PATCH: fixes / polish
-__version__ = "3.2.1"
+__version__ = "3.2.2"
 
 # Display name for logs / dashboard
 APP_NAME = "XenBlocks Miner by Tony.x1"
