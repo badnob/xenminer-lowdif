@@ -2,6 +2,11 @@
 
 Format: keep newest first. Bump `core/version.py` + `VERSION` together.
 
+## 3.1.1 — 2026-07-30
+
+- **Sequential multi-prefix VRAM fill**: when lanes run one-at-a-time (Win11 default, no DLL copies / no native multi-lane), each lane gets the **full** batch budget so NVML used approaches target. Previously the planner assumed parallel VRAM (`lanes × batch`) and left most of the card idle (~9 GiB at dif 100).
+- Default `max_lanes` raised to **8** for low-dif key coverage under sequential mode.
+
 ## 3.1.0 — 2026-07-30
 
 Low-difficulty harvest fork baseline (beyond stock 3.0.0):
